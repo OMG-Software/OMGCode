@@ -7,6 +7,8 @@ pub mod container;
 pub mod credentials;
 pub mod foreground;
 pub mod interrupt;
+#[cfg(any(windows, target_os = "linux"))]
+pub mod ipc;
 pub mod journal;
 pub mod private_store;
 pub mod process;

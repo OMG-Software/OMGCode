@@ -170,6 +170,7 @@ const fn provider_failure_code(error: ProviderError) -> Option<&'static str> {
             Some("plan_response_incomplete")
         }
         ProviderError::ResponseFailed(failure) => Some(failure.as_str()),
+        ProviderError::ClaudeCode(failure) => Some(failure.code()),
         _ => None,
     }
 }

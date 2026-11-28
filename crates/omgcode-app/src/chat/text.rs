@@ -5,7 +5,7 @@
 //! whether or not it streams (ADR-0050, ADR-0051).
 
 use omgcode_core::prompt::{self, ConversationMessage, ConversationRole};
-use omgcode_core::provider::{LocalModelClient, ProviderError};
+use omgcode_core::provider::ProviderError;
 use omgcode_core::session::{MessageRole, RequestManifest, SessionError, SessionJournal};
 use omgcode_core::turn::replay_active;
 
@@ -16,6 +16,7 @@ use super::tools::CANCELLED_MESSAGE;
 use super::{ChatHooks, Turn};
 use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
+use crate::model_client::ModelClient;
 use crate::secrets::redact_known_secret;
 
 /// Largest assistant text kept resumable within the journal and prompt limits.
@@ -25,7 +26,7 @@ const MAX_REPLY_BYTES: usize = 16 * 1024;
 /// uncertain storage state after a failed write is preserved, not overwritten.
 pub(super) fn run(
     journal: &mut SessionJournal,
-    client: &LocalModelClient,
+    client: &ModelClient,
     turn: &Turn<'_>,
     reason: &'static str,
     manifest: RequestManifest,

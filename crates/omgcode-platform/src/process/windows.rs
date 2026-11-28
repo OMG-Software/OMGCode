@@ -4,10 +4,13 @@
 //! `PROC_THREAD_ATTRIBUTE_JOB_LIST`, so it cannot start a descendant outside the
 //! job. The job disallows breakaway and kills every member when its last handle
 //! closes. Only the three standard handles are inherited, through
-//! `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. An unconfined run applies no token
+//! `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`: standard input is the null device for a
+//! blocking run and the child's end of an anonymous pipe for a streaming one. An unconfined run applies no token
 //! restriction. A confined run also passes
 //! `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` with the workspace container
-//! SID and no capabilities, so the whole tree runs in that AppContainer.
+//! SID, so the whole tree runs in that AppContainer. The capabilities are none
+//! under `NetworkAccess::Denied` and exactly `internetClient` under
+//! `NetworkAccess::Internet`.
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
@@ -53,11 +56,12 @@ use windows_sys::Win32::System::Threading::{
     WaitForSingleObject,
 };
 
+use super::streaming::Launched;
 use super::{
     AppliedConfinement, CancelSignal, Capture, Confinement, ConfinementEntry, NetworkAccess,
     ProcessError, ProcessLimits, ProcessOutcome, ProcessSpec, ProcessTree, ResourceLimit,
-    Termination, TreeLimits, TreeUsage, UngrantedPath, UnixSocketAccess, is_batch_script,
-    stop_tree, supervise,
+    StdinMode, StreamingChild, Termination, TreeLimits, TreeUsage, UngrantedPath, UnixSocketAccess,
+    is_batch_script, stop_tree, streaming, supervise,
 };
 use crate::container::ContainerAccess;
 use crate::container::windows::{derive_sid, granted_access, profile_exists};
@@ -115,8 +119,86 @@ pub(super) fn run(
     confinement: Option<&Confinement>,
     limits: ProcessLimits,
     cancel: &CancelSignal,
-    mut disk: Option<super::DiskMonitor>,
+    disk: Option<super::DiskMonitor>,
 ) -> Result<ProcessOutcome, ProcessError> {
+    let Launch {
+        mut tree,
+        applied,
+        stdout_read,
+        stderr_read,
+        started,
+        disk,
+        ..
+    } = launch(spec, confinement, limits, disk, StdinMode::Null)?;
+    let capture = match Capture::start(File::from(stdout_read), File::from(stderr_read), limits) {
+        Ok(capture) => capture,
+        Err(error) => {
+            stop_tree(&mut tree, limits.cleanup_timeout)?;
+            return Err(ProcessError::Supervision(error));
+        }
+    };
+    supervise(&mut tree, capture, started, limits, cancel, applied, disk)
+}
+
+/// Start one confined program with live standard input and output pipes.
+///
+/// Standard input is an anonymous pipe: the child's read end is inheritable
+/// only inside [`SPAWN_LOCK`] and named in the handle list, and the parent
+/// keeps the write end, which is never inheritable. Everything else is as
+/// [`run`].
+pub(super) fn spawn_streaming(
+    spec: &ProcessSpec,
+    confinement: &Confinement,
+    limits: ProcessLimits,
+    disk: Option<super::DiskMonitor>,
+) -> Result<StreamingChild, ProcessError> {
+    let Launch {
+        tree,
+        applied,
+        stdin_write,
+        stdout_read,
+        stderr_read,
+        started,
+        disk,
+    } = launch(spec, Some(confinement), limits, disk, StdinMode::Pipe)?;
+    let Some(stdin_write) = stdin_write else {
+        return Err(ProcessError::Supervision(io::Error::other(
+            "the child's input pipe was not created",
+        )));
+    };
+    streaming::start(Launched {
+        tree,
+        stdin: File::from(stdin_write),
+        stdout: File::from(stdout_read),
+        stderr: File::from(stderr_read),
+        started,
+        limits,
+        applied,
+        disk,
+    })
+}
+
+/// A started, resumed tree and the parent's ends of its pipes.
+struct Launch {
+    tree: WindowsTree,
+    applied: AppliedConfinement,
+    /// The parent's write end of standard input; `None` for a null input.
+    stdin_write: Option<OwnedHandle>,
+    stdout_read: OwnedHandle,
+    stderr_read: OwnedHandle,
+    started: Instant,
+    disk: Option<super::DiskMonitor>,
+}
+
+/// Create the job and pipes, start the program suspended inside its job and
+/// container, verify membership, and resume it. Nothing is supervised yet.
+fn launch(
+    spec: &ProcessSpec,
+    confinement: Option<&Confinement>,
+    limits: ProcessLimits,
+    mut disk: Option<super::DiskMonitor>,
+    stdin: StdinMode,
+) -> Result<Launch, ProcessError> {
     let container = confinement
         .map(|confinement| prepare_container(spec, confinement))
         .transpose()?;
@@ -131,10 +213,22 @@ pub(super) fn run(
     let environment = environment_block(spec);
     let directory = wide_nul(spec.working_directory.as_os_str());
     let (job, limits_state) = create_job(limits.tree).map_err(ProcessError::Spawn)?;
-    let null_input = OpenOptions::new()
-        .read(true)
-        .open("NUL")
-        .map_err(ProcessError::Spawn)?;
+    // The child's input end, and the parent's write end when it is a pipe.
+    let (child_input, stdin_write) = match stdin {
+        StdinMode::Null => (
+            OwnedHandle::from(
+                OpenOptions::new()
+                    .read(true)
+                    .open("NUL")
+                    .map_err(ProcessError::Spawn)?,
+            ),
+            None,
+        ),
+        StdinMode::Pipe => {
+            let (read, write) = pipe().map_err(ProcessError::Spawn)?;
+            (read, Some(write))
+        }
+    };
     let (stdout_read, stdout_write) = pipe().map_err(ProcessError::Spawn)?;
     let (stderr_read, stderr_write) = pipe().map_err(ProcessError::Spawn)?;
     // Start sampling before the program exists, so a sampler that cannot start
@@ -147,7 +241,7 @@ pub(super) fn run(
         // The lock guards no data, so a poisoned lock carries no broken invariant.
         let _guard = SPAWN_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let inherited = [
-            null_input.as_raw_handle() as HANDLE,
+            child_input.as_raw_handle() as HANDLE,
             stdout_write.as_raw_handle() as HANDLE,
             stderr_write.as_raw_handle() as HANDLE,
         ];
@@ -171,13 +265,13 @@ pub(super) fn run(
             )
         });
         // The child has its own copies; ours must close so the pipes can end.
-        drop(null_input);
+        drop(child_input);
         drop(stdout_write);
         drop(stderr_write);
         result.map_err(ProcessError::Spawn)?
     };
 
-    let mut tree = WindowsTree {
+    let tree = WindowsTree {
         job,
         process: created.process,
         limits: limits_state,
@@ -187,15 +281,15 @@ pub(super) fn run(
         terminate_process(&tree.process);
         return Err(ProcessError::Spawn(error));
     }
-    let started = Instant::now();
-    let capture = match Capture::start(File::from(stdout_read), File::from(stderr_read), limits) {
-        Ok(capture) => capture,
-        Err(error) => {
-            stop_tree(&mut tree, limits.cleanup_timeout)?;
-            return Err(ProcessError::Supervision(error));
-        }
-    };
-    supervise(&mut tree, capture, started, limits, cancel, applied, disk)
+    Ok(Launch {
+        tree,
+        applied,
+        stdin_write,
+        stdout_read,
+        stderr_read,
+        started: Instant::now(),
+        disk,
+    })
 }
 
 /// Check a confinement and derive its container SID before anything starts.

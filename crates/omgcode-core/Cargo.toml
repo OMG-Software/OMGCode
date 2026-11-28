@@ -27,6 +27,12 @@ bytes.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+# The test binary is also the fake `claude` and its relay, so it needs
+# its own `main` (ADR-0109).
+[[test]]
+name = "claude_code_process"
+harness = false
+
 [lints]
 workspace = true
 

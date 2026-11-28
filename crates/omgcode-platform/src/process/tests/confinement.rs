@@ -216,10 +216,10 @@ fn grandchild() -> io::Result<()> {
 }
 
 /// Test side: private directories, host listeners, and the confinement.
-struct Scene {
+pub(super) struct Scene {
     root: tempfile::TempDir,
     read_only_directory: PathBuf,
-    workspace: PathBuf,
+    pub(super) workspace: PathBuf,
     secret: PathBuf,
     host_socket: PathBuf,
     _unix_listener: UnixListener,
@@ -227,7 +227,7 @@ struct Scene {
 }
 
 impl Scene {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = tempfile::tempdir().expect("scene root");
         let read_only_directory = root.path().join("toolchain");
         let workspace = root.path().join("workspace");
@@ -252,7 +252,11 @@ impl Scene {
         }
     }
 
-    fn confinement(&self, unix_sockets: UnixSocketAccess, network: NetworkAccess) -> Confinement {
+    pub(super) fn confinement(
+        &self,
+        unix_sockets: UnixSocketAccess,
+        network: NetworkAccess,
+    ) -> Confinement {
         let mut read_only = vec![
             PathBuf::from("/usr"),
             self.read_only_directory.clone(),
@@ -274,7 +278,7 @@ impl Scene {
         }
     }
 
-    fn spec(&self) -> ProcessSpec {
+    pub(super) fn spec(&self) -> ProcessSpec {
         let mut spec = spec("probe");
         spec.working_directory = self.workspace.clone();
         let tcp = self.tcp_listener.local_addr().expect("TCP address");

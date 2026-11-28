@@ -352,7 +352,7 @@ their registered identifier, and approvals by identifier.
 | `settings_select_connection` | settings | Choose the default or a recorded profile with an endpoint (a hosted one also needs a bound credential) as the model connection, after a native confirmation |
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0092) |
 | `settings_set_api_key` | settings | Replace the stored API key of a hosted `api_key` profile; the key is write-only and no dialog is shown |
-| `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile |
+| `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile; a removed Claude Code connection's running turns end first, within 30 seconds (ADR-0109) |
 | `settings_sign_in_chatgpt` | settings | After a native confirmation, sign a connection in with ChatGPT, recording an `openai` subscription profile first when the name has none; Rust opens the browser and waits at most five minutes (ADR-0093) |
 | `settings_cancel_chatgpt_sign_in` | settings | End the running ChatGPT sign-in's or sign-out's wait; takes nothing and grants nothing |
 | `settings_sign_out_chatgpt` | settings | After a native confirmation, revoke a ChatGPT session once, record the sign-out, and delete its tokens; reports whether OpenAI confirmed the revocation |
@@ -1732,8 +1732,12 @@ revision check and validation (ADR-0064, ADR-0071).
   [provider authentication](provider-authentication.md#hosted-providers-adr-0092).
   A request that gives a local kind a key, gives a named hosted kind an
   endpoint, or omits the field its kind needs is refused as
-  `invalid_request` before anything is recorded. A new profile is not used
-  until it is selected.
+  `invalid_request` before anything is recorded. A `claude_code` kind is
+  refused the same way before its key is read: only the trusted CLI records
+  that connection (ADR-0109). The window names a recorded one **Claude
+  Code**, marks it **CLI only** with no key field or hosted notice, never
+  offers the kind in its add dropdown, and can remove it. A new profile is
+  not used until it is selected.
 - **The API key is write-only** (ADR-0059 decision 6, ADR-0071 decision 5).
   The key is typed into a password field, sent once in `settings_add_connection` or
   `settings_set_api_key`, and the field is emptied as the button is pressed,

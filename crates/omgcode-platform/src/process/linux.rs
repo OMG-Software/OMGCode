@@ -16,7 +16,7 @@ mod seccomp;
 use std::io;
 use std::os::fd::RawFd;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::Instant;
 
 use rustix::io::Errno;
@@ -25,10 +25,11 @@ use rustix::process::{Pid, Signal};
 use self::cgroup::RunCgroup;
 use self::landlock::Ruleset;
 use self::seccomp::FilterScope;
+use super::streaming::Launched;
 use super::{
     AppliedConfinement, CancelSignal, Capture, Confinement, DiskMonitor, ProcessError,
-    ProcessLimits, ProcessOutcome, ProcessSpec, ProcessTree, ResourceLimit, Termination, TreeUsage,
-    stop_tree, supervise,
+    ProcessLimits, ProcessOutcome, ProcessSpec, ProcessTree, ResourceLimit, StdinMode,
+    StreamingChild, Termination, TreeUsage, UnconfirmedCleanup, stop_tree, streaming, supervise,
 };
 
 const SECCOMP_MODE_FILTER: libc::c_ulong = 2;
@@ -39,8 +40,97 @@ pub(super) fn run(
     confinement: Option<&Confinement>,
     limits: ProcessLimits,
     cancel: &CancelSignal,
-    mut disk: Option<DiskMonitor>,
+    disk: Option<DiskMonitor>,
 ) -> Result<ProcessOutcome, ProcessError> {
+    let Launch {
+        mut tree,
+        stdout,
+        stderr,
+        started,
+        applied,
+        disk,
+        ..
+    } = launch(spec, confinement, limits, disk, StdinMode::Null)?;
+    let capture = match Capture::start(stdout, stderr, limits) {
+        Ok(capture) => capture,
+        Err(error) => {
+            stop_tree(&mut tree, limits.cleanup_timeout)?;
+            tree.confirmed = true;
+            return Err(ProcessError::Supervision(error));
+        }
+    };
+    let result = supervise(&mut tree, capture, started, limits, cancel, applied, disk);
+    if !matches!(result, Err(ProcessError::CleanupUnconfirmed(_))) {
+        tree.confirmed = true;
+    }
+    result
+}
+
+/// Start one confined program with live standard input and output pipes. The
+/// Landlock, seccomp, and cgroup setup is the same as [`run`]'s; the child's
+/// standard input is a pipe instead of the null device.
+///
+/// A `HostServices` Unix-socket mode together with `NetworkAccess::Internet`
+/// is accepted: the seccomp filter allows `AF_INET`, `AF_INET6`, and
+/// `AF_UNIX` sockets, and Landlock leaves TCP connects unrestricted and
+/// grants socket-file creation in read-write paths. Validation rejects no
+/// combination of the two modes.
+pub(super) fn spawn_streaming(
+    spec: &ProcessSpec,
+    confinement: &Confinement,
+    limits: ProcessLimits,
+    disk: Option<DiskMonitor>,
+) -> Result<StreamingChild, ProcessError> {
+    let Launch {
+        tree,
+        stdin,
+        stdout,
+        stderr,
+        started,
+        applied,
+        disk,
+    } = launch(spec, Some(confinement), limits, disk, StdinMode::Pipe)?;
+    let Some(stdin) = stdin else {
+        let mut tree = tree;
+        stop_tree(&mut tree, limits.cleanup_timeout)?;
+        tree.confirmed = true;
+        return Err(ProcessError::Supervision(io::Error::other(
+            "the child's input pipe was not created",
+        )));
+    };
+    streaming::start(Launched {
+        tree,
+        stdin,
+        stdout,
+        stderr,
+        started,
+        limits,
+        applied,
+        disk,
+    })
+}
+
+/// A started tree and the parent's ends of its pipes.
+struct Launch {
+    tree: LinuxTree,
+    /// The parent's write end of standard input; `None` for a null input.
+    stdin: Option<ChildStdin>,
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    started: Instant,
+    applied: AppliedConfinement,
+    disk: Option<DiskMonitor>,
+}
+
+/// Install the restrictions, start the program, and take its pipes. Nothing
+/// is supervised yet.
+fn launch(
+    spec: &ProcessSpec,
+    confinement: Option<&Confinement>,
+    limits: ProcessLimits,
+    mut disk: Option<DiskMonitor>,
+    stdin: StdinMode,
+) -> Result<Launch, ProcessError> {
     let (filter, ruleset, applied) = match confinement {
         None => (
             seccomp::filter(FilterScope::ProcessGroup)?,
@@ -73,7 +163,10 @@ pub(super) fn run(
         .current_dir(&spec.working_directory)
         .env_clear()
         .envs(spec.environment.iter().map(|(name, value)| (name, value)))
-        .stdin(Stdio::null())
+        .stdin(match stdin {
+            StdinMode::Null => Stdio::null(),
+            StdinMode::Pipe => Stdio::piped(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // `std` calls setpgid before the hook below installs the filter.
@@ -96,6 +189,7 @@ pub(super) fn run(
     let mut child = spawned.map_err(ProcessError::Spawn)?;
     let started = Instant::now();
     let group = Pid::from_child(&child);
+    let input = child.stdin.take();
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         let mut tree = LinuxTree::new(child, group, cgroup);
         stop_tree(&mut tree, limits.cleanup_timeout)?;
@@ -104,20 +198,15 @@ pub(super) fn run(
             "the child's output pipes were not created",
         )));
     };
-    let mut tree = LinuxTree::new(child, group, cgroup);
-    let capture = match Capture::start(stdout, stderr, limits) {
-        Ok(capture) => capture,
-        Err(error) => {
-            stop_tree(&mut tree, limits.cleanup_timeout)?;
-            tree.confirmed = true;
-            return Err(ProcessError::Supervision(error));
-        }
-    };
-    let result = supervise(&mut tree, capture, started, limits, cancel, applied, disk);
-    if !matches!(result, Err(ProcessError::CleanupUnconfirmed(_))) {
-        tree.confirmed = true;
-    }
-    result
+    Ok(Launch {
+        tree: LinuxTree::new(child, group, cgroup),
+        stdin: input,
+        stdout,
+        stderr,
+        started,
+        applied,
+        disk,
+    })
 }
 
 /// Steps run in the child between `fork` and `exec`. The cgroup comes first,
@@ -274,10 +363,16 @@ impl ProcessTree for LinuxTree {
     fn release(&mut self) -> Result<(), ProcessError> {
         match &mut self.cgroup {
             Some(cgroup) => cgroup.remove().map_err(|_| {
-                ProcessError::CleanupUnconfirmed("the run's cgroup could not be removed")
+                ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::new(
+                    "the run's cgroup could not be removed",
+                ))
             }),
             None => Ok(()),
         }
+    }
+
+    fn cleanup_confirmed(&mut self) {
+        self.confirmed = true;
     }
 
     fn is_empty(&mut self) -> io::Result<bool> {

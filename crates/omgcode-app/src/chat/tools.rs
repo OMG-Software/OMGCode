@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use omgcode_core::policy::WorkspaceId;
 use omgcode_core::prompt::ModelMessage;
-use omgcode_core::provider::{LocalModelClient, LocalToolModel, ProviderError};
+use omgcode_core::provider::ProviderError;
 use omgcode_core::session::{RequestManifest, SessionJournal};
 use omgcode_core::turn::{
     ModelError, ToolModel, ToolModelReply, ToolModelRequest, TurnError, TurnLimit, TurnLimits,
@@ -24,6 +24,7 @@ use super::stream::StreamSink;
 use super::{ChatHooks, ChatSettings, Turn};
 use crate::context::ContextMeter;
 use crate::error::{AppError, ErrorKind};
+use crate::model_client::{ModelClient, TurnModel};
 use crate::secrets::redact_known_secret;
 
 /// Runtime limits for a validated chat budget, with room for the final reply.
@@ -41,7 +42,7 @@ fn chat_limits(settings: &ChatSettings) -> TurnLimits {
 pub(super) fn run(
     journal: &mut SessionJournal,
     workspace_id: WorkspaceId,
-    client: &LocalModelClient,
+    client: &ModelClient,
     turn: &Turn<'_>,
     manifest: RequestManifest,
     context: ContextMeter,
@@ -66,9 +67,9 @@ pub(super) fn run(
         }
     };
     let inner = if sink.is_some() {
-        LocalToolModel::streaming(client, &mut forward)
+        client.tool_model(Some(&mut forward))
     } else {
-        LocalToolModel::new(client)
+        client.tool_model(None)
     };
     let mut model = RedactingModel {
         inner,
@@ -130,7 +131,7 @@ pub(super) fn run(
 /// editing its arguments could change the requested path. The runtime records
 /// calls before any result filter runs, so the refusal happens here.
 struct RedactingModel<'a, 's> {
-    inner: LocalToolModel<'a>,
+    inner: TurnModel<'a>,
     token: Option<&'a str>,
     /// The turn's stream sink, shared with `inner`'s text callback.
     stream: Option<&'a RefCell<StreamSink<'s>>>,

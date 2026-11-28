@@ -254,12 +254,12 @@ fn host_pipe(name: &str) -> OwnedHandle {
 }
 
 /// Test side: granted directories, host listeners, and the container.
-struct Scene {
+pub(super) struct Scene {
     _root: tempfile::TempDir,
     read_only_directory: PathBuf,
     bin: PathBuf,
     program: PathBuf,
-    workspace: PathBuf,
+    pub(super) workspace: PathBuf,
     secret: PathBuf,
     pipe_name: String,
     _pipe: OwnedHandle,
@@ -291,7 +291,7 @@ fn serve_host_tcp(listener: &TcpListener, stop: &Receiver<()>) -> usize {
 }
 
 impl Scene {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = tempfile::tempdir().expect("scene root");
         let read_only_directory = root.path().join("toolchain");
         let bin = root.path().join("bin");
@@ -372,7 +372,7 @@ impl Scene {
         Some(service.join())
     }
 
-    fn confinement(&self) -> Confinement {
+    pub(super) fn confinement(&self) -> Confinement {
         Confinement {
             read_only: vec![self.read_only_directory.clone(), self.bin.clone()],
             read_write: vec![self.workspace.clone()],
@@ -382,7 +382,7 @@ impl Scene {
         }
     }
 
-    fn spec(&self) -> ProcessSpec {
+    pub(super) fn spec(&self) -> ProcessSpec {
         let mut spec = spec("probe");
         spec.program = self.program.clone();
         // Windows replaces this with the container's own folder and sets

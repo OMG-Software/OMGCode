@@ -48,7 +48,7 @@ use std::fmt;
 use std::path::Path;
 
 use omgcode_core::control::{
-    ControlError, ControlStore, CredentialStore, LoadedProviderConnection,
+    ClaudeCodePaths, ControlError, ControlStore, CredentialStore, LoadedProviderConnection,
     ProviderCredentialUseError, ProviderKind, Secret,
 };
 use omgcode_core::provider::ModelEndpoint;
@@ -431,12 +431,48 @@ pub fn profile_selectability(data_root: &Path, name: &str) -> Result<(), Profile
         })
 }
 
+/// Resolve a recorded `claude_code` connection for one turn (ADR-0109), or
+/// `None` when `name` is another kind of profile. `relay_program` is the
+/// `omgcode` executable that will serve as the MCP relay; on Windows the
+/// connection's container must hold an active grant for its folder.
+///
+/// OMGCode reads no Claude credential here or anywhere: the sign-in folder
+/// is checked only as a folder identity and handed to `claude`.
+///
+/// # Errors
+///
+/// A `credential` error when the settings store is missing or busy, and
+/// `claude_code_unusable` with core's reason when a recorded folder changed,
+/// a grant is missing, or the program is no longer the recorded file.
+pub fn resolve_claude_code(
+    data_root: &Path,
+    name: &str,
+    relay_program: &Path,
+) -> Result<Option<ClaudeCodePaths>, AppError> {
+    let control = open_settings(data_root, name)?;
+    if local_adapter(&control, name) != ProviderKind::ClaudeCode {
+        return Ok(None);
+    }
+    control
+        .resolve_claude_code(name, relay_program)
+        .map(Some)
+        .map_err(|error| credential_error(format!("claude_code_unusable: {error}")))
+}
+
 /// Resolve one profile's endpoint and token from an open settings store.
 fn profile_connection(
     control: ControlStore,
     data_root: &Path,
     name: &str,
 ) -> Result<LocalConnection, AppError> {
+    // A Claude Code connection has no endpoint or token; only the CLI's
+    // `chat` and `session compact` resolve it, through
+    // [`resolve_claude_code`] (ADR-0109).
+    if local_adapter(&control, name) == ProviderKind::ClaudeCode {
+        return Err(credential_error(
+            "claude_code_cli_only: a Claude Code connection runs only through `omgcode chat --provider-profile` and `omgcode session compact --provider-profile`".to_owned(),
+        ));
+    }
     if is_plan_profile(&control, name) {
         let (endpoint, plan) = plan_session(&control, data_root, name)?;
         return Ok(LocalConnection {

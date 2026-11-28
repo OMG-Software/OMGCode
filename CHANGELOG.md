@@ -6,6 +6,146 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.72.0 adds a `claude_code` connection that drives the operator's
+  own signed-in, unmodified Claude Code CLI (`claude`) from the trusted CLI
+  (ADR-0109). The operator signs `claude` in with `claude auth login` and a
+  `CLAUDE_CONFIG_DIR` kept for this connection; OMGCode offers no Claude
+  sign-in and never reads, copies, stores, or passes the Claude credential.
+  `workspace claude-code-add` records the canonical program and the sign-in
+  folder's identity, `workspace claude-code-grant` grants the connection's own
+  AppContainer (`OMGCode.ClaudeCode.<profile id>`, with `internetClient`)
+  read-execute on the program's folder, the running `omgcode` executable's
+  folder, and a runtime folder in storage, and read-write on the sign-in
+  folder, and `workspace claude-code-revoke` revokes them and deletes the
+  container profile; a profile with grants cannot be removed. `chat
+  --provider-profile` and `session compact --provider-profile` start one
+  confined `claude -p` per model request, with an environment built from
+  nothing, `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, the
+  built-in plugins disabled, slash commands, session persistence,
+  auto-memory, auto-update, and telemetry off, and stream-json output read
+  through bounded parsers. Its `system/init` report must list exactly the
+  offered tools, one connected `omgcode` MCP server, no plugin, skill, or
+  slash command, and `apiKeySource` `none`, and every tool block must name an
+  offered tool, or the tree is ended with `claude_code_lockdown`. OMGCode's
+  tools reach `claude` only through the hidden `omgcode mcp-relay`
+  subcommand, which copies MCP bytes after a per-turn nonce over a named pipe
+  that admits only the connection's container (on Linux a socket in a
+  random `0700` folder under `XDG_RUNTIME_DIR` or `/tmp`, so its path fits
+  in `sun_path`); the
+  trusted process serves MCP and holds each `tools/call` open while the turn
+  runtime checks, approves, dispatches, and journals it as for every other
+  provider. Failures are `claude_code_not_signed_in`, `claude_code_protocol`,
+  `claude_code_failed`, `claude_code_withdrawn`, and
+  `claude_code_turn_records_full`, in chat and in
+  compaction; a request manifest records the endpoint label
+  `claude-code:<profile>`. Each process holds a shared turn lock beside the
+  runtime folder, checks every settings state since its turn resolved the
+  connection before it starts, and is ended by a watcher when a later state
+  revokes one of its grants, removes it, or records another connection's
+  sign-in folder in its program or relay folder. The watcher checks once more as
+  it stops, a watcher that panicked fails the turn, and the turn lock of a
+  process whose end was not confirmed, also of a tree the launch could not
+  stop, stays held until OMGCode exits; a relay worker still running after
+  the tree ended keeps it until that worker ends. Each turn writes and syncs
+  a record, `claude-code/<profile id>.<turn id>.unconfirmed`, before its
+  settings check and launch, so a removal that the check misses finds it,
+  and removes it only after its whole tree was observed ended. A
+  record left behind outlives OMGCode, makes every later revocation and
+  removal of the connection fail, and keeps its sign-in folder reserved, and
+  its program and relay folders free of other connections' sign-in folders,
+  also once the connection is removed, until `workspace claude-code-acknowledge
+  <profile id>` removes the connection's records. The operator first checks
+  the entire `claude` process tree, including its MCP relays and their
+  descendants, and keeps the record while that cannot be confirmed; the
+  command records nothing about that check and is refused with a lock error
+  while a turn holds the lock. A revocation that stopped on such a record
+  names the acknowledgement before advising a retry. At most 256 turn
+  records are kept, counted and written under one exclusive lock across
+  every connection, so concurrent turns cannot pass the limit together: a
+  turn that finds that many starts nothing and fails with
+  `claude_code_turn_records_full`, whose message names the acknowledgement
+  and the process-tree check before it, a sign-in
+  folder check that finds more is refused with a `control` error that names
+  the acknowledgement, and the acknowledgement still clears a connection's
+  records while the inventory is full. A record is written whole under a
+  `.staging` name that no reader lists and renamed into place under that
+  lock, so a sign-in folder check, which reads the records without it, sees
+  a whole record or none; a record removed after the check listed it
+  reserves nothing, and one that exists but cannot be read is refused.
+  `workspace claude-code-revoke`, `workspace provider-profile-remove`, and
+  the `settings` window's removal wait up to 30 seconds for those processes
+  to end, or fail with a `control` error that says the change is recorded;
+  a revocation that fails after it recorded, or may have recorded, a
+  withdrawal also waits and reports both outcomes. On Linux no grant
+  exists, so `claude-code-revoke` changes nothing there and
+  `provider-profile-remove` withdraws a connection. The sign-in folder stays
+  apart from every workspace container grant, every other connection's
+  sign-in folder, and every other
+  connection's program and relay grants, and every other connection's
+  program folder, and a program or relay folder stays apart from every
+  other connection's sign-in folder, which each turn checks again, on Linux
+  too. A grant or
+  sign-in record whose folder changed proves no separation, so it is
+  refused until that grant is revoked or that connection removed; on
+  Windows a moved, granted sign-in folder is restored to its recorded path,
+  revoked, and then removed, and one that cannot be restored has no
+  verified safe recovery. A grant
+  checks its whole plan before it records anything, and revoking retries a
+  container profile deletion that was interrupted. At most eight output
+  events queue for the turn, and calls are handed off at the end of each
+  batch of queued events, so a steady stream cannot hold one back. Every
+  relay write has a deadline at which the channel is shut and the process
+  tree ended, and a write that finished first is never reported as
+  stopped. A write counts as finished only once its writer recorded it, so
+  one stopped first fails the turn even if its bytes went out; the writer
+  samples the cancellation and deadline once, just before the record, and
+  that sample decides, so either one that came first fails the write and
+  neither one after it fails a write recorded in time. Calls are not handed
+  to the turn runtime while queued output that the turn would refuse waits
+  behind them: a malformed line, the end of the output, input that never
+  fully arrived, a second init report, a tool or message naming a refused
+  tool, a failed sign-in, a result while the calls would be held, or text
+  past the budget; status output and accepted text do not hold them back.
+  The main agent's streamed text and its final text, which repeats it, each
+  have an 8 MiB budget, a sub-agent's text
+  delta is checked before it is ignored, a reused MCP request identifier is
+  refused, the rendered prompt's size is checked before it is copied, a
+  call whose cancellation is already queued is retired before any call is
+  handed to the turn runtime, and a cancellation queued while the runtime
+  runs a call withholds its answer. On Linux a runtime folder that is not
+  UTF-8 falls back to `/tmp`, since the relay configuration is JSON.
+  The desktop shell, the active selection, and `models` refuse the profile
+  with `claude_code_cli_only`; the `settings` window names a recorded one
+  **Claude Code**, marks it CLI only with no key field, can remove it, and
+  refuses to add one. The platform crate
+  gains a confined spawn with streamed standard input and output and a
+  container-only local pipe and private Unix socket, and
+  `ProcessError::CleanupUnconfirmed` now carries an `UnconfirmedCleanup`
+  with the native cause: a failed termination or emptiness check no longer
+  counts as a confirmed cleanup, so the tree's fallback kill still runs. A
+  streaming child's `has_ended` turns true once its tree is observed empty,
+  also when the accounting after that fails. Two harnessless test
+  binaries use a fake `claude`, on Windows inside the real AppContainer with
+  real grants, through the core runtime and the CLI commands. The core one
+  runs its tests in a supervised copy of itself; when a test ends that copy
+  with a turn still running, the supervisor stops what it left, observes
+  the ends of the fake, its relay, and a descendant that ignores its closed
+  pipes, on Windows revokes the connection, which deletes its container
+  profile, and removes the fixtures, which its own test checks. A failed
+  scope stop, an end not observed, an alive file that names no holder, or a
+  failed revocation keeps and names the folder instead, which three more of
+  its tests check. A copy still running after 20 minutes is ended and
+  reaped before that cleanup and fails the run, which a fifth test checks,
+  and one that has not exited 30 seconds after it was killed keeps its
+  folder; each `systemctl` command of the scope's stop is bounded, its reap
+  too, and on Windows a
+  scene whose drop cannot revoke its connection keeps its folders for the
+  supervisor. It is a minor
+  version because the public `ProviderError` and `ProviderKind` enums gain
+  variants. Both binaries also passed on Linux under WSL 2 in a delegated
+  cgroup. No signed-in turn of the real `claude` ran on either platform,
+  and it is personal use, not evidence of Anthropic approval: the Claude
+  subscription requirement stays open.
 - Version 0.68.0 adds **Generate toolchain profiles from local packages** to
   the **Toolchain profiles** group of the desktop `settings` window. The
   local packages are the toolchains installed on this computer, and it

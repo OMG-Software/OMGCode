@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 mod common;
 
 use omgcode_app::{
-    ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput, compact_journal,
-    create_session, run_chat_turn,
+    ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput, ChatTurnOutput, ModelClient,
+    compact_journal, create_session, run_chat_turn,
 };
 use omgcode_core::context::ContextBudget;
 use omgcode_core::control::ControlStore;
@@ -1508,7 +1508,7 @@ fn a_cancelled_compaction_through_the_command_path_records_nothing() {
     let error = compact_journal(
         &mut journal,
         &fixture.data,
-        &client,
+        &ModelClient::from(client),
         None,
         ContextBudget {
             threshold: u64::MAX,

@@ -4,8 +4,10 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    AssignmentFailure, ContainerGrantAccess, ControlError, ControlStore, CredentialId, FolderGrant,
+    AssignmentFailure, CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeRevokeFailure,
+    ContainerGrantAccess, ControlError, ControlStore, CredentialId, FolderGrant,
     PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
+    acknowledge_claude_code_cleanup, wait_for_claude_code_turns,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -254,6 +256,56 @@ pub(crate) enum WorkspaceCommand {
         #[arg(long)]
         revision: u64,
     },
+    /// Record a Claude Code connection that drives the signed-in `claude`
+    /// program for `chat --provider-profile NAME` (ADR-0109).
+    ///
+    /// Sign `claude` in first with `claude auth login`, with
+    /// CLAUDE_CONFIG_DIR set to a folder kept for this connection alone,
+    /// outside application storage, the development root, and every
+    /// workspace. OMGCode records that folder's identity and never reads,
+    /// copies, or stores the Claude credential in it. The connection is for
+    /// the operator's own use; Anthropic has not approved OMGCode as a
+    /// Claude Code client. On Windows grant its folders next with
+    /// `claude-code-grant`.
+    ClaudeCodeAdd {
+        #[arg(long)]
+        name: String,
+        /// The `claude` program (`claude.exe` on Windows).
+        #[arg(long)]
+        program: PathBuf,
+        /// The folder `claude auth login` signed in to.
+        #[arg(long)]
+        config_folder: PathBuf,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Grant a Claude Code connection's own AppContainer the folders its
+    /// process needs, Windows only: read and execute on the `claude`
+    /// program's folder, on this executable's folder (the MCP relay), and on
+    /// the connection's runtime folder in application storage, and read and
+    /// write on the sign-in folder.
+    ClaudeCodeGrant {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Revoke every Windows grant of a Claude Code connection and delete its
+    /// AppContainer profile, then wait up to 30 seconds until every running
+    /// turn of the connection has ended. On Windows a connection is removed
+    /// with `provider-profile-remove` only after this. Linux records no
+    /// grants, so there this changes nothing and running turns continue;
+    /// `provider-profile-remove` is what withdraws a connection there.
+    ClaudeCodeRevoke { name: String },
+    /// Remove the records that turns of the Claude Code connection with this
+    /// profile identifier left because their whole process tree was not
+    /// observed to end. Until then every revocation and removal of the
+    /// connection fails, and a removed connection's sign-in folder stays
+    /// reserved. Check first that no `claude` process of the connection
+    /// remains, including its MCP relays and their descendants, and keep the
+    /// records while that cannot be confirmed: this only removes them and
+    /// records nothing about the check. Refused while a turn of the
+    /// connection holds its turn lock.
+    ClaudeCodeAcknowledge { profile_id: String },
 }
 
 /// Sign a profile in with ChatGPT. The settings store is not held while the
@@ -834,11 +886,18 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         WorkspaceCommand::ProviderProfileRemove { name, revision } => {
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            // Read before the removal: a removed Claude Code connection's
+            // running turns end, and the command waits for them.
+            let claude_code = store.claude_code_setup(&name).ok().map(|(id, _)| id);
             let output = credential_cli::remove_profile(&mut store, data_root, &name, revision)?;
             let listed = withdrawn_runs(&store);
             drop(store);
+            let turns_ended = claude_code.map_or(Ok(()), |profile_id| {
+                wait_for_claude_code_turns(data_root, profile_id, CLAUDE_CODE_TURN_STOP_WAIT)
+            });
             stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
             listed?;
+            turns_ended.map_err(control_error)?;
             print_json(&output)
         }
         WorkspaceCommand::ProviderCredentialSet { name, revision } => {
@@ -860,6 +919,83 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         }
         WorkspaceCommand::ProviderSignout { name, revision } => {
             provider_signout(data_root, &name, revision)
+        }
+        WorkspaceCommand::ClaudeCodeAdd {
+            name,
+            program,
+            config_folder,
+            revision,
+        } => {
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let profile = store
+                .add_claude_code_profile(
+                    &ClaudeCodeDeclaration {
+                        name,
+                        program,
+                        config_folder,
+                    },
+                    revision,
+                )
+                .map_err(control_error)?;
+            print_json(&json!({
+                "provider_profile_id": profile.id(),
+                "snapshot": store.snapshot(),
+            }))
+        }
+        WorkspaceCommand::ClaudeCodeGrant { name, revision } => {
+            let relay = crate::relay_program()?;
+            let relay_folder = relay.parent().ok_or_else(|| {
+                CliError::new("configuration", "The OMGCode executable has no folder")
+            })?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let grants = store
+                .grant_claude_code(&name, relay_folder, revision)
+                .map_err(control_error)?;
+            print_json(&json!({
+                "claude_code_grants": grants,
+                "snapshot": store.snapshot(),
+            }))
+        }
+        WorkspaceCommand::ClaudeCodeRevoke { name } => {
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            // The running turns' watchers read the revocation only once the
+            // settings are released; the command reports success only after
+            // every process of the connection was observed ended.
+            let revocation = match store.revoke_claude_code_grants(&name) {
+                Ok(revocation) => revocation,
+                Err(failure) => {
+                    drop(store);
+                    return Err(partial_claude_code_revocation(data_root, failure));
+                }
+            };
+            let output = json!({
+                "revocation": revocation,
+                "snapshot": store.snapshot(),
+            });
+            drop(store);
+            if revocation.turns_withdrawn {
+                wait_for_claude_code_turns(
+                    data_root,
+                    revocation.profile_id,
+                    CLAUDE_CODE_TURN_STOP_WAIT,
+                )
+                .map_err(control_error)?;
+            }
+            print_json(&output)
+        }
+        WorkspaceCommand::ClaudeCodeAcknowledge { profile_id } => {
+            let profile_id = Uuid::parse_str(&profile_id).map_err(|_| {
+                CliError::new("configuration", "Invalid provider profile identifier")
+            })?;
+            let acknowledged =
+                acknowledge_claude_code_cleanup(data_root, profile_id).map_err(control_error)?;
+            print_json(&json!({
+                "provider_profile_id": profile_id,
+                "acknowledged": acknowledged,
+            }))
         }
         WorkspaceCommand::ContainerRevoke { grant } => {
             let mut store = open_existing(data_root)?
@@ -898,6 +1034,42 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             print_json(&output)
         }
     }
+}
+
+/// The error of a revocation that failed. When it had already recorded, or
+/// may have recorded, a withdrawal, the connection's running turns are
+/// ending, so the error is reported only after waiting for them, together
+/// with the wait's outcome.
+fn partial_claude_code_revocation(data_root: &Path, failure: ClaudeCodeRevokeFailure) -> CliError {
+    let Some(profile_id) = failure.withdrawn else {
+        return control_error(failure.error);
+    };
+    let turns = wait_for_claude_code_turns(data_root, profile_id, CLAUDE_CODE_TURN_STOP_WAIT);
+    CliError::new("control", partial_revocation_message(&failure.error, turns))
+}
+
+/// The message of a revocation that stopped with `error` after a withdrawal,
+/// given how the wait for the connection's turns ended. A retry clears no
+/// turn record, so a wait that found one names the check and the
+/// acknowledgement before any retry.
+fn partial_revocation_message(error: &ControlError, turns: Result<(), ControlError>) -> String {
+    let (turns, next) = match turns {
+        Ok(()) => (
+            "every running turn of the connection ended".to_owned(),
+            "Run the command again.",
+        ),
+        Err(unconfirmed @ ControlError::ClaudeCodeCleanupUnconfirmed(_)) => (
+            format!("its running turns were not observed ended: {unconfirmed}"),
+            "A retry cannot clear that record, so run the command again only after that check and acknowledgement.",
+        ),
+        Err(error) => (
+            format!("its running turns were not observed ended: {error}"),
+            "Run the command again.",
+        ),
+    };
+    format!(
+        "The revocation stopped after it recorded, or may have recorded, the connection's withdrawal: {error}; {turns}. {next}"
+    )
 }
 
 fn container_grant(args: ContainerGrantArgs, data_root: &Path) -> Result<(), CliError> {
@@ -1534,5 +1706,71 @@ mod tests {
             completed_change(RevokingChange::Recorded, &revoked(&[])),
             "The change was recorded."
         );
+    }
+
+    /// A failed revocation that recorded no withdrawal reports its error at
+    /// once; one that did reports it only after the connection's turns were
+    /// waited for, with the wait's outcome.
+    #[test]
+    fn a_partial_claude_code_revocation_reports_the_turns_it_waited_for() {
+        let data = tempfile::tempdir().expect("data folder");
+        let refused = partial_claude_code_revocation(
+            data.path(),
+            ClaudeCodeRevokeFailure {
+                error: ControlError::UnknownProvider,
+                withdrawn: None,
+            },
+        );
+        assert_eq!(refused.message, ControlError::UnknownProvider.to_string());
+
+        // No turn ever started, so the wait ends at once.
+        let partial = partial_claude_code_revocation(
+            data.path(),
+            ClaudeCodeRevokeFailure {
+                error: ControlError::LimitReached,
+                withdrawn: Some(Uuid::new_v4()),
+            },
+        );
+        assert!(
+            partial.message.starts_with(&format!(
+                "The revocation stopped after it recorded, or may have recorded, the connection's withdrawal: {}",
+                ControlError::LimitReached
+            )),
+            "{}",
+            partial.message
+        );
+        assert!(
+            partial
+                .message
+                .contains("every running turn of the connection ended"),
+            "{}",
+            partial.message
+        );
+    }
+
+    /// A wait that found a turn record left behind names the check and the
+    /// acknowledgement and advises a retry only after them; any other wait
+    /// outcome keeps the direct retry advice.
+    #[test]
+    fn a_partial_revocation_with_an_unconfirmed_turn_names_the_acknowledgement_before_a_retry() {
+        let profile_id = Uuid::new_v4();
+        let unconfirmed = partial_revocation_message(
+            &ControlError::LimitReached,
+            Err(ControlError::ClaudeCodeCleanupUnconfirmed(profile_id)),
+        );
+        assert!(
+            unconfirmed.contains(&format!("workspace claude-code-acknowledge {profile_id}")),
+            "{unconfirmed}"
+        );
+        assert!(
+            unconfirmed.ends_with(
+                "A retry cannot clear that record, so run the command again only after that check and acknowledgement."
+            ),
+            "{unconfirmed}"
+        );
+        for turns in [Ok(()), Err(ControlError::ClaudeCodeTurnsRunning)] {
+            let direct = partial_revocation_message(&ControlError::LimitReached, turns);
+            assert!(direct.ends_with(". Run the command again."), "{direct}");
+        }
     }
 }

@@ -12,6 +12,7 @@ import {
   isFixedHostedKind,
   isHostedKind,
   isLocalKind,
+  isProgramKind,
   NEW_CONNECTION_KINDS,
   PROVIDER_NAMES,
   providerName,
@@ -164,6 +165,9 @@ export function isChatGpt(profile: ProviderProfileView): boolean {
 }
 
 function credentialLine(profile: ProviderProfileView): string {
+  if (isProgramKind(profile.kind)) {
+    return "No credential: the program keeps its own sign-in";
+  }
   if (isChatGpt(profile)) {
     if (!profile.credential_bound) {
       return "Not signed in";
@@ -185,6 +189,13 @@ function chatGptButton(profile: ProviderProfileView, { submit, actions }: Sectio
     : button("Sign in with ChatGPT", () => submit(actions.signInChatGpt(profile.name)));
 }
 
+/**
+ * The line under a Claude Code connection (ADR-0109). Only the trusted CLI records or uses one,
+ * so this window names it and can remove it, which ends its running turns first.
+ */
+export const PROGRAM_CONNECTION_NOTE =
+  "Runs your signed-in Claude Code CLI. Only the trusted CLI can use it: omgcode chat --provider-profile with this name. Removing it ends its running turns.";
+
 /** The line under a hosted profile: where prompts go, or why it cannot be used at all. */
 export const NO_ENDPOINT_NOTE =
   "No endpoint is recorded, so this connection cannot be used. An endpoint cannot be added later: remove it and add it again.";
@@ -204,6 +215,7 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
   const { submit, actions } = ctx;
   const plan = isChatGpt(profile);
   const hosted = isHostedKind(profile.kind) && !plan;
+  const program = isProgramKind(profile.kind);
   // Removing a profile with a stored key deletes the key too; Rust asks a system Yes/No first.
   const remove = button("Remove", () => submit(actions.removeConnection(profile.name)));
   return el(
@@ -219,6 +231,7 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
         profile.active ? el("span", { class: "chip chip-active", text: "Active" }) : null,
         hosted ? el("span", { class: "chip", text: "Hosted" }) : null,
         plan ? el("span", { class: "chip", text: "ChatGPT plan" }) : null,
+        program ? el("span", { class: "chip", text: "CLI only" }) : null,
       ),
       el("div", {
         class: "row-meta",
@@ -226,6 +239,7 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
       }),
       el("div", { class: "row-meta", text: credentialLine(profile) }),
       hosted ? el("div", { class: "row-meta", text: hostedRowNote(profile) }) : null,
+      program ? el("div", { class: "row-meta", text: PROGRAM_CONNECTION_NOTE }) : null,
       // A subscription profile never holds a key, and a profile without an endpoint can never
       // be used, so neither has a key field.
       hosted && profile.auth === "api_key" && profile.endpoint !== null

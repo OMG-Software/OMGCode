@@ -19,6 +19,8 @@ use super::{
 
 #[cfg(target_os = "linux")]
 mod confinement;
+#[cfg(any(windows, target_os = "linux"))]
+mod streaming;
 mod tree_limits;
 #[cfg(windows)]
 mod windows_confinement;
@@ -70,6 +72,15 @@ fn fixture() {
             }
             0
         }
+        "flood-stderr" => {
+            let chunk = [b'x'; 64 * 1024];
+            let mut stderr = std::io::stderr().lock();
+            for _ in 0..FLOOD_BYTES / chunk.len() {
+                stderr.write_all(&chunk).expect("write stderr flood");
+            }
+            0
+        }
+        "stdin-echo" => stdin_echo(),
         "sleep" => {
             thread::sleep(Duration::from_secs(120));
             0
@@ -112,6 +123,23 @@ fn fixture() {
     std::io::stdout().flush().expect("flush stdout");
     std::io::stderr().flush().expect("flush stderr");
     std::process::exit(code);
+}
+
+/// Echo each stdin line to stdout as `echo:<line>` and flush it at once, so a
+/// parent can see the reply before it closes stdin. Standard error gets a
+/// marker at start. At end of input it prints `eof` and exits with 0.
+fn stdin_echo() -> i32 {
+    use std::io::BufRead;
+    eprint!("echo-ready");
+    std::io::stderr().flush().expect("flush stderr");
+    let mut stdout = std::io::stdout();
+    for line in std::io::stdin().lock().lines() {
+        let line = line.expect("read stdin line");
+        writeln!(stdout, "echo:{line}").expect("write echo");
+        stdout.flush().expect("flush echo");
+    }
+    writeln!(stdout, "eof").expect("write eof");
+    0
 }
 
 fn write_record(text: &str) {

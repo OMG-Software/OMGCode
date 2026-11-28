@@ -12,12 +12,13 @@ use omgcode_core::context::{
     MAX_SUMMARY_BYTES, SummaryReply, compact,
 };
 use omgcode_core::prompt::{self, ConversationMessage};
-use omgcode_core::provider::{LocalModelClient, ProviderError};
+use omgcode_core::provider::ProviderError;
 use omgcode_core::session::SessionJournal;
 use omgcode_core::turn::CancelToken;
 use serde::Serialize;
 
 use crate::error::{AppError, ErrorKind};
+use crate::model_client::ModelClient;
 use crate::secrets::redact_known_secret;
 use crate::tool_mode::tool_replay_allowed;
 
@@ -40,12 +41,13 @@ pub fn summary_output_tokens(context_tokens: u64) -> u32 {
 /// Unreadable settings fail closed: no tool data reaches the summarizer.
 /// `cancel` stops a summarizer request in progress and prevents the next one
 /// (ADR-0051); a cancelled compaction is `cancelled` and records nothing,
-/// because the journal is written only after the last summary. Other failures
-/// are `context`. `token` is removed from summarizer input and output.
+/// because the journal is written only after the last summary. A ChatGPT plan
+/// or Claude Code failure keeps its provider code; other failures are
+/// `context`. `token` is removed from summarizer input and output.
 pub fn compact_journal(
     journal: &mut SessionJournal,
     data_root: &Path,
-    client: &LocalModelClient,
+    client: &ModelClient,
     token: Option<&str>,
     summary_budget: ContextBudget,
     cancel: &CancelToken,
@@ -83,20 +85,27 @@ pub fn compact_journal(
             })
         },
     )
-    .map_err(|error| match error {
+    .map_err(|error| compaction_error(error, cancel))
+}
+
+/// The error a failed compaction reports.
+fn compaction_error(error: ContextError, cancel: &CancelToken) -> AppError {
+    match error {
         ContextError::AuthorityWithdrawn => AppError::new(ErrorKind::Permission, error.to_string()),
         // Only a set token makes this a cancellation, as in the runtime.
         ContextError::Provider(ProviderError::Cancelled) if cancel.is_cancelled() => {
             AppError::new(ErrorKind::Cancelled, COMPACTION_CANCELLED_MESSAGE)
         }
-        // A ChatGPT plan failure keeps its specific code, as in a chat turn.
+        // A ChatGPT plan or Claude Code failure keeps its specific code, as
+        // in a chat turn.
         ContextError::Provider(
             error @ (ProviderError::SignInRequired
             | ProviderError::AccessTokenUnavailable
-            | ProviderError::ResponseFailed(_)),
+            | ProviderError::ResponseFailed(_)
+            | ProviderError::ClaudeCode(_)),
         ) => AppError::provider(error),
         error => AppError::new(ErrorKind::Context, error.to_string()),
-    })
+    }
 }
 
 /// The message of a cancelled compaction, which recorded nothing.
@@ -218,7 +227,34 @@ impl CompactionMeter {
 
 #[cfg(test)]
 mod tests {
+    use omgcode_core::provider::claude_code::ClaudeCodeFailure;
+
     use super::*;
+
+    #[test]
+    fn a_claude_code_failure_keeps_its_code_in_compaction() {
+        let cancel = CancelToken::new();
+        for failure in [
+            ClaudeCodeFailure::NotSignedIn,
+            ClaudeCodeFailure::Lockdown,
+            ClaudeCodeFailure::Protocol,
+            ClaudeCodeFailure::Failed,
+            ClaudeCodeFailure::Withdrawn,
+            ClaudeCodeFailure::TurnRecordsFull,
+        ] {
+            let error = compaction_error(
+                ContextError::Provider(ProviderError::ClaudeCode(failure)),
+                &cancel,
+            );
+            assert_eq!(error.kind(), ErrorKind::Provider);
+            assert_eq!(error.code(), failure.code());
+        }
+        let other = compaction_error(
+            ContextError::Provider(ProviderError::ResponseTooLarge),
+            &cancel,
+        );
+        assert_eq!(other.code(), ErrorKind::Context.code());
+    }
 
     #[test]
     fn the_summary_reserve_is_a_quarter_of_the_context_within_bounds() {

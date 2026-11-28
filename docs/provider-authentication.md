@@ -22,7 +22,7 @@ billing or defer it.
 | OpenAI API | User API key; API-account billing | Prototype through the Chat Completions adapter at the fixed endpoint `https://api.openai.com/v1` (ADR-0092); API key only; no request was verified with a real key |
 | ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Prototype ([ChatGPT sign-in](#chatgpt-sign-in-adr-0093)): browser sign-in with PKCE, state, nonce, and ID-token checks, tokens in protected OS storage, and chat through the Responses API, tested against loopback mock servers; one real sign-in, model list, text turn, and two read and list tool turns were observed (ADR-0096, ADR-0097), but other plan usage is not verified and the requirement stays open |
 | Anthropic API | User API key; API-account billing | Prototype through Anthropic's OpenAI SDK compatibility layer at `https://api.anthropic.com/v1` (ADR-0092), which Anthropic documents for testing, not production; API key only; no request was verified with a real key |
-| Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved |
+| Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved. A [Claude Code connection](#claude-code-connection-adr-0109) drives the operator's own signed-in `claude` CLI from the trusted CLI, as personal use that is not evidence of approval; OMGCode handles no Claude credential, and no signed-in turn ran inside its sandbox |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
 | Ollama Cloud | Provider cloud credentials | Direct connection to the fixed endpoint `https://ollama.com/v1` with a stored API key bound to an `ollama_cloud` profile (ADR-0071); the model list shape was observed, the chat, stream, and tool-call shapes were not verified with a real key |
 | OpenRouter | User API key and explicit upstream routing | Prototype at `https://openrouter.ai/api/v1` (ADR-0092); the model list shape was observed without a key; upstream routing preferences are not sent; API key only; no request was verified with a real key |
@@ -142,15 +142,29 @@ before calling this feature available. A CLI or SDK wrapper alone is not
 evidence of that approval. Keep the requirement open and the blocker visible;
 a separately billed Anthropic API connection remains a different profile.
 
+Anthropic's Claude Code legal and compliance page bars third-party
+developers from offering Claude.ai sign-in, from routing requests through
+plan credentials on behalf of their users, and from collecting, storing, or
+brokering Claude.ai credentials or session tokens. The
+[Claude Code connection](#claude-code-connection-adr-0109) does none of
+these: the operator signs the unmodified CLI in, and OMGCode only starts it.
+No page says whether a separate program may drive the signed-in CLI for its
+own user, so the connection stays personal use and the requirement stays
+open.
+[Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)
+
 ## Recorded provider profiles (0.24.0)
 
 `workspace provider-profile-add/show/remove` record a name, a provider kind,
 and an authentication mode. Kinds are `lm_studio`, `ollama_local`,
 `ollama_cloud`, `anthropic`, `openai`, `open_router`, and, since ADR-0092,
 `google`, `meta`, `moonshot`, `tencent`, `thinking_machines`, `minimax`,
-`z_ai`, `deepseek`, `xai`, and `openai_compatible`. Modes are
+`z_ai`, `deepseek`, `xai`, and `openai_compatible`, and, since ADR-0109,
+`claude_code`, which only `workspace claude-code-add` records
+([below](#claude-code-connection-adr-0109)). Modes are
 `subscription`, `api_key`, and `none`. Subscription is accepted only for
-OpenAI and Anthropic. Since ADR-0093 an `openai` subscription profile with
+OpenAI, Anthropic, and Claude Code, and the `claude_code` kind accepts only
+`subscription`. Since ADR-0093 an `openai` subscription profile with
 OpenAI's fixed endpoint can sign in with ChatGPT
 ([below](#chatgpt-sign-in-adr-0093)); no adapter reads an `anthropic` one. API keys are accepted for LM
 Studio and every hosted kind. Since ADR-0071 an `ollama_cloud` profile also
@@ -601,6 +615,93 @@ documented route for local and open-source apps
   is not evidence that a plan, model, or account may be used. The
   [acceptance evidence](#acceptance-evidence) below has not been gathered, so
   the ChatGPT subscription requirement remains open.
+
+## Claude Code connection (ADR-0109)
+
+A `claude_code` profile drives the operator's own signed-in Claude Code CLI
+(`claude`) as a model connection. OMGCode offers no Claude sign-in and never
+reads, copies, stores, or passes a Claude credential. This is personal use of
+the operator's own sign-in to the unmodified binary; it is not evidence of
+Anthropic approval, and the Claude subscription requirement stays open.
+
+- **Setup.** The operator signs `claude` in with `claude auth login`, with
+  `CLAUDE_CONFIG_DIR` set to a folder kept for this connection alone,
+  outside application storage, the development root, every workspace,
+  every workspace container grant, and every other connection's sign-in
+  folder.
+  `workspace claude-code-add --name NAME --program PATH --config-folder
+  PATH --revision N` records the canonical program and the folder's
+  identity; the generic `provider-profile-add` refuses the kind, which
+  accepts authentication `subscription` only and records no endpoint or
+  credential binding. On Windows, `workspace claude-code-grant NAME
+  --revision N` grants the connection's own AppContainer read-execute on the
+  program's folder, on the running `omgcode` executable's folder (the MCP
+  relay), and on the connection's runtime folder in application storage,
+  and read-write on the sign-in folder. `workspace claude-code-revoke NAME`
+  revokes every grant and deletes the container profile; a profile with
+  grants cannot be removed. Revoking, and removing the connection with
+  `provider-profile-remove` or the `settings` window, ends its running turns
+  and waits up to 30 seconds for their processes to end. Each turn writes
+  a record before its settings check and launch, so a removal that the
+  check misses finds it, and removes it only once its whole process
+  tree was observed ended. A record left behind makes every such wait fail,
+  also after OMGCode restarts, and keeps the connection's sign-in folder
+  reserved, also once the connection is removed. The record also names the
+  program and relay folders the turn reads: while it exists, no other
+  connection's sign-in folder that overlaps either is recorded, though a
+  separate one is. Before running `workspace
+  claude-code-acknowledge PROFILE_ID`, the operator must check that no
+  `claude` process of the connection remains, including its MCP relays and
+  their descendants, and keep the record while that cannot be confirmed.
+  The command only removes the connection's turn records; it records
+  nothing about that check and is refused while a turn holds the
+  connection's turn lock. At most 256 turn records are kept, each counted,
+  written whole under a `.staging` name, and renamed into place under one
+  exclusive lock across every connection, so a sign-in folder check never
+  reads a partial record; one removed after the check listed it reserves
+  nothing. Past that limit
+  no turn starts, failing with `claude_code_turn_records_full`, and a
+  sign-in folder check is refused until records are
+  acknowledged, which still works while the inventory is full. On Linux no
+  grant exists, so only removing the connection withdraws it.
+- **Use.** `chat --provider-profile NAME` and `session compact
+  --provider-profile NAME` resolve the connection. Every turn re-checks the
+  recorded folder identities and, on Windows, each grant, and checks that
+  neither its program folder nor its relay folder overlaps another
+  connection's sign-in folder, on Linux too; a settings state that records
+  such a folder while the turn starts or runs withdraws it. Every other route,
+  including the desktop shell, the active selection, and `models`, refuses
+  the profile with `claude_code_cli_only`. A request manifest records the
+  endpoint label `claude-code:NAME`.
+- **The child.** Each run starts `claude -p` in the connection's sandbox
+  with an environment built from nothing: no `ANTHROPIC_*` or `CLAUDE_*`
+  variable of OMGCode's own environment reaches it, and
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `CLAUDE_CODE_OAUTH_TOKEN`
+  are never set. Its built-in tools, settings files, plugins, skills, slash
+  commands, session persistence, auto-memory, auto-update, and telemetry
+  are switched off by flags and variables, and its `system/init` report is
+  checked; a report that names anything else ends the run with
+  `claude_code_lockdown`. OMGCode's tools reach it only through one MCP
+  server whose relay copies bytes to the trusted process over a per-turn
+  pipe or socket.
+- **Failures.** A run that the CLI reports as not signed in fails with
+  `claude_code_not_signed_in`, which tells the operator to run `claude auth
+  login` with `CLAUDE_CONFIG_DIR` set to the connection's sign-in folder.
+  The other failures are `claude_code_protocol`, `claude_code_failed`,
+  `claude_code_withdrawn`, which means the settings revoked a grant of the
+  connection, removed it, or recorded another connection's sign-in folder
+  in a folder the turn reads while the turn ran, and
+  `claude_code_turn_records_full`, whose message names the acknowledgement
+  and the process-tree check that must come first.
+- **Verified.** A fake `claude` drives the whole path in the tests: on
+  Windows inside the connection's real AppContainer with real grants,
+  through the CLI commands, a tool turn, a streamed resumed turn, a
+  revocation during a running turn, and compaction. The same tests passed on Linux under WSL 2 (Ubuntu 24.04) in
+  a delegated cgroup. Claude Code 2.1.325's flags, init report, MCP
+  handshake, and sign-in failure were observed directly on Windows ([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
+- **Not verified.** No signed-in turn of the real `claude` ran on either
+  platform, Linux ran only under WSL 2, and rate-limit and long-turn shapes
+  were not observed.
 
 ## Stored credential use (0.30.0)
 

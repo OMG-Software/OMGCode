@@ -361,6 +361,18 @@ journal that records an endpoint cannot be read by 0.30.0. The
 [provider authentication guide](provider-authentication.md#endpoint-binding-0310)
 owns the rules.
 
+A `claude_code` profile (0.72.0,
+[ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md))
+is recorded with `workspace claude-code-add` instead, which `provider-profile-add`
+refuses. Its `provider_profile_added` event carries a `claude_code` field with
+the program and the identities of its folder and of the sign-in folder, and no
+endpoint or credential. The connection's container grants are recorded as
+`claude_code_grant_requested`, `claude_code_grant_applied`,
+`claude_code_revoke_requested`, and `claude_code_grant_revoked`, with the same
+grant reserve as workspace grants, and replay refuses a profile removal while
+any of its grants remains. A control journal that records one cannot be read
+by 0.71.0. The profile grants no workspace permission.
+
 Since 0.44.0, `provider-profile-select <name> --revision <n>` records
 `active_provider_selected` with the profile's identifier, and `--default`
 records it without one. Only an `lm_studio` or `ollama_local` profile with an
