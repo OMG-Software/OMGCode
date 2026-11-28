@@ -6,14 +6,14 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use omgcode_app::desktop::{
-    ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalOperationDto,
-    ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary, Binding, ChatEvent,
-    ChatOutcome, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ContextMeterDto,
-    Decision, DesktopError, EntryKind, MessageRoleDto, ReasoningEffort, SearchHit, SearchRequest,
-    SearchResult, SearchRoleDto, SessionCreateRequest, SessionRequest, SessionStatus,
-    SessionSummary, SessionTree, SnippetPart, ToolOutcomeDto, ToolsMode, TranscriptEntry,
-    TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView, WorkspaceChoice,
-    WorkspaceGroup, WorkspaceList,
+    AllowHostView, ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList,
+    ApprovalOperationDto, ApprovalRequest, ApprovalStateDto, ApprovalView, ApprovalsSummary,
+    Binding, ChatEvent, ChatOutcome, ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus,
+    ContextMeterDto, Decision, DesktopError, EntryKind, MessageRoleDto, ReasoningEffort, SearchHit,
+    SearchRequest, SearchResult, SearchRoleDto, SessionCreateRequest, SessionRequest,
+    SessionStatus, SessionSummary, SessionTree, SnippetPart, ToolOutcomeDto, ToolsMode,
+    TranscriptEntry, TranscriptPage, TranscriptRequest, TreeRequest, TreeSort, TreeView,
+    WorkspaceChoice, WorkspaceGroup, WorkspaceList,
 };
 use omgcode_core::policy::Access;
 use serde_json::{Value, json};
@@ -417,6 +417,9 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
         }],
         review_token: token.map(str::to_owned),
         waiting: token.is_some(),
+        allow_host: token.map(|_| AllowHostView::Offered {
+            host: "docs.example.com".to_owned(),
+        }),
     };
     for (value, tool_kind) in [
         (detail(Binding::Exact, Some("token")), "string"),
@@ -432,6 +435,7 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
                 ("fields", "array"),
                 ("review_token", "string|null"),
                 ("waiting", "bool"),
+                ("allow_host", "object|null"),
             ],
         );
         assert_shape(
@@ -442,6 +446,21 @@ fn workspace_and_approval_responses_have_exactly_the_declared_keys() {
                 ("multiline", "bool"),
             ],
         );
+    }
+
+    // Only an offer carries a host; every other state is its tag alone.
+    assert_shape(
+        &json_of(&AllowHostView::Offered {
+            host: "docs.example.com".to_owned(),
+        }),
+        &[("state", "string"), ("host", "string")],
+    );
+    for view in [
+        AllowHostView::NotAllow,
+        AllowHostView::Full,
+        AllowHostView::Unavailable,
+    ] {
+        assert_shape(&json_of(&view), &[("state", "string")]);
     }
 }
 
@@ -684,6 +703,7 @@ fn every_serialized_interface_has_exactly_the_fields_types_ts_declares() {
         }],
         review_token: None,
         waiting: false,
+        allow_host: None,
     });
     let list = json_of(&ApprovalList {
         now_unix: 1,
@@ -769,6 +789,32 @@ fn closed_unions_serialize_to_the_values_types_ts_declares() {
             ]
             .iter()
             .map(json_of)
+            .collect()
+        )
+    );
+    // Every decision the window can send is one Rust accepts, and no more.
+    let decisions: Vec<Decision> = union("ApprovalDecision")
+        .iter()
+        .map(|decision| serde_json::from_value(json!(decision)).expect("a decision"))
+        .collect();
+    assert_eq!(
+        decisions,
+        [Decision::AllowHost, Decision::Approve, Decision::Deny],
+        "sorted by wire name"
+    );
+    assert_eq!(
+        union("AllowHostState"),
+        strings(
+            [
+                AllowHostView::Offered {
+                    host: "docs.example.com".to_owned()
+                },
+                AllowHostView::NotAllow,
+                AllowHostView::Full,
+                AllowHostView::Unavailable
+            ]
+            .iter()
+            .map(|view| json_of(view)["state"].clone())
             .collect()
         )
     );
@@ -891,6 +937,23 @@ fn requests_match_the_argument_objects_the_client_sends() {
     }));
     assert_eq!(decide.decision, Decision::Approve);
     assert_eq!(decide.review_token, None);
+    // Allow host sends a decision and a token, never a host (ADR-0110).
+    assert!(approvals.contains("decision: ApprovalDecision,"));
+    let allow: ApprovalDecideRequest = wire(json!({
+        "id": session,
+        "decision": "allow_host",
+        "writers_stopped": false,
+        "review_token": "t",
+    }));
+    assert_eq!(allow.decision, Decision::AllowHost);
+    let with_host: Result<ApprovalDecideRequest, _> = serde_json::from_value(json!({
+        "id": session,
+        "decision": "allow_host",
+        "writers_stopped": false,
+        "review_token": "t",
+        "host": "docs.example.com",
+    }));
+    assert!(with_host.is_err(), "a host from the webview is refused");
 }
 
 #[test]

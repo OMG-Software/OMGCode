@@ -279,9 +279,10 @@ read/write the edit, multi-edit, create, rename, delete, and
 create-directory tools, with execute/read/write the command tool when a
 toolchain profile is recorded for the platform, and with `--web-fetch` other
 than `deny` the `web_fetch` tool. `web-host-add`, `web-host-remove`, and
-`web-host-list` manage the workspace's allowlist of at most 32 host patterns,
+`web-host-list` manage the workspace's allowlist of at most 100 host patterns,
 which lets `--web-fetch allow` skip the approval for those hosts
-([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)).
+([ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md),
+[ADR-0110](adr/0110-allow-a-web-host-from-a-fetch-approval-and-list-100-hosts.md)).
 See [model tools](workspace-permissions.md#model-readlist-and-command-tools).
 See the [workspace contract](workspace-permissions.md) for limits and failures.
 `container-grant` and `container-revoke` work on Windows only. They change ACLs

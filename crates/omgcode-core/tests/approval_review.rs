@@ -10,7 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use omgcode_core::control::{
-    ApprovalOperation, ApprovalState, ApprovalStatus, ControlStore, ProfileDeclaration, now_unix,
+    ApprovalOperation, ApprovalState, ApprovalStatus, ControlStore, ProfileDeclaration,
+    WebHostRefusal, now_unix,
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
@@ -1601,6 +1602,9 @@ fn a_network_approval_is_reviewed_with_its_url_host_allowlist_state_offset_and_s
     assert_eq!(field(&request, "Offset").value, "4096");
     assert_eq!(field(&request, "Maximum bytes").value, "2048");
     assert!(request.fields.iter().all(|field| !field.multiline));
+    // Under `prompt` a listed host would still ask, so Allow host is not
+    // offered (ADR-0110).
+    assert_eq!(request.allow_host, Some(Err(WebHostRefusal::FetchNotAllow)));
     // Review reads nothing from the workspace and fetches nothing.
     assert_eq!(fixture.audit_reads(), 0);
     assert_eq!(fixture.state(approval.id), ApprovalState::Pending);
@@ -1687,6 +1691,48 @@ fn a_network_review_goes_stale_when_the_allowlist_changes() {
         panic!("the new call reproduces its digest");
     };
     assert_eq!(field(&request, "Host on the allowlist now").value, "yes");
+    assert_eq!(request.allow_host, Some(Err(WebHostRefusal::FetchNotAllow)));
+}
+
+#[test]
+fn a_network_review_under_allow_offers_the_exact_host_unless_it_is_listed() {
+    let mut fixture = Fixture::new();
+    fixture.enable_web_fetch();
+    let mut control = ControlStore::open_existing(&fixture.data)
+        .expect("open control")
+        .expect("control store");
+    let permissions = PermissionSet {
+        web_fetch: Access::Allow,
+        ..control
+            .workspace(fixture.workspace_id)
+            .expect("workspace")
+            .permissions()
+    };
+    control
+        .set_permissions(fixture.workspace_id, permissions, control.revision())
+        .expect("allow web_fetch");
+    drop(control);
+    // A wildcard does not list the bare domain, so the fetch still asks.
+    fixture.allow_host("*.docs.example.com");
+    fixture.turn(vec![fetch_call(
+        "fetch-1",
+        json!({"url": "https://DOCS.example.com/guide?q=1"}),
+    )]);
+    let approval = fixture.pending(ApprovalOperation::Network);
+    let ApprovalReview::Exact(request) = fixture
+        .review(&approval, &fixture.recorded())
+        .expect("review")
+    else {
+        panic!("the recorded call reproduces the digest");
+    };
+    let host = request
+        .allow_host
+        .expect("a web fetch review")
+        .expect("offered under allow");
+    assert_eq!(host.pattern().as_str(), "docs.example.com");
+    assert!(!host.pattern().is_wildcard());
+    assert_eq!(host.approval_id(), approval.id);
+    assert_eq!(fixture.state(approval.id), ApprovalState::Pending);
 }
 
 #[test]

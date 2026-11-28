@@ -21,7 +21,9 @@ use super::{
     edit_digest, edit_target, is_hidden_format, list_parent, multi_edit_digest, normalized_path,
     prepare_edit, prepare_multi_edit, read_edit_source, rename_digest, web_fetch_digest,
 };
-use crate::control::{ApprovalOperation, ApprovalStatus, ControlError, ControlStore};
+use crate::control::{
+    ApprovalOperation, ApprovalStatus, ControlError, ControlStore, ReviewedHost, WebHostRefusal,
+};
 use crate::file_audit::FileAuditError;
 use crate::files::FileError;
 use crate::replacement::CheckpointError;
@@ -81,6 +83,12 @@ pub struct ReviewedRequest {
     pub tool: String,
     /// Labelled values, each already passed through [`display_safe`].
     pub fields: Vec<ReviewField>,
+    /// For a `web_fetch` request, whether approving may also list its exact
+    /// host now (ADR-0110): the host, or why it cannot be listed. `None` for
+    /// every other tool. A snapshot: the decision checks again. Not
+    /// serialized, so a review's text output never carries it.
+    #[serde(skip)]
+    pub allow_host: Option<Result<ReviewedHost, WebHostRefusal>>,
 }
 
 /// One labelled, display-safe value of a reviewed request.
@@ -272,6 +280,7 @@ fn review_command<'a>(
             return Some(ReviewedRequest {
                 tool: ToolName::Command.as_str().to_owned(),
                 fields: command_fields(&request),
+                allow_host: None,
             });
         }
     }
@@ -298,6 +307,7 @@ fn review_file_read<'a>(
             return Some(ReviewedRequest {
                 tool: call.name.as_str().to_owned(),
                 fields: read_fields(&read),
+                allow_host: None,
             });
         }
     }
@@ -338,6 +348,15 @@ fn review_web_fetch<'a>(
         );
         if digest == approval.request_sha256 {
             let listed = control.web_fetch_host_allowed(approval.workspace_id, fetch_url.host());
+            // The caller already checked that the settings revision is the
+            // approval's, so only the workspace's own state can refuse.
+            let allow_host =
+                ReviewedHost::of_review(approval.id, &approval.request_sha256, fetch_url.host())
+                    .and_then(|host| {
+                        control
+                            .allow_host_refusal(approval.workspace_id, host.pattern())
+                            .map_or(Ok(host), Err)
+                    });
             return Some(ReviewedRequest {
                 tool: ToolName::WebFetch.as_str().to_owned(),
                 fields: vec![
@@ -347,6 +366,7 @@ fn review_web_fetch<'a>(
                     single("Offset", offset.to_string()),
                     single("Maximum bytes", max_bytes.to_string()),
                 ],
+                allow_host: Some(allow_host),
             });
         }
     }
@@ -505,6 +525,7 @@ fn review_file_write<'a>(
             return Ok(Some(ReviewedRequest {
                 tool: tool.as_str().to_owned(),
                 fields,
+                allow_host: None,
             }));
         }
     }

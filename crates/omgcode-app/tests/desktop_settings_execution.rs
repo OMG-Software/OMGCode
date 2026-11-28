@@ -1067,10 +1067,11 @@ fn a_bad_web_host_request_is_refused_with_its_code_before_any_dialog() {
 }
 
 #[test]
-fn a_thirty_third_web_host_is_refused_before_any_dialog() {
+fn a_web_host_beyond_the_hundredth_is_refused_before_any_dialog() {
     let fixture = Fixture::new();
     let workspace = with_workspace(&fixture);
-    for index in 0..32 {
+    assert_eq!(omgcode_core::control::MAX_WEB_FETCH_HOSTS, 100);
+    for index in 0..omgcode_core::control::MAX_WEB_FETCH_HOSTS {
         host_added(&fixture, workspace, &format!("h{index}.example.com"));
     }
     let before = current_revision(&fixture.data);

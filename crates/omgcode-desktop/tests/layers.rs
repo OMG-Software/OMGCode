@@ -217,28 +217,38 @@ fn no_dialog_plugin_or_other_tauri_plugin_is_a_dependency() {
     assert!(manifest.contains("rfd = {"), "rfd opens the dialogs");
     let lib = read(&crate_dir().join("src/lib.rs"));
     assert!(!lib.contains(".plugin("), "no plugin is registered");
-    // Only the settings handlers open dialogs, and in the main window's
-    // handlers only `connection_select`, whose native Yes/No is the
-    // safeguard for the model box's provider choice (ADR-0071, ADR-0084,
-    // ADR-0089).
+    // Only the settings handlers open dialogs. In other windows exactly one
+    // named handler may: `connection_select` in the main window, whose native
+    // Yes/No is the safeguard for the model box's provider choice (ADR-0071,
+    // ADR-0084, ADR-0089), and `approval_decide` in the approvals window,
+    // whose native Yes/No guards Allow host (ADR-0110).
+    let single_dialog_handlers = [
+        ("chat.rs", "connection_select"),
+        ("approvals.rs", "approval_decide"),
+    ];
     for (path, text) in handler_sources() {
         let opens_dialogs = text.contains("NativePrompt");
-        let main_handlers = path.ends_with("chat.rs");
+        let single = single_dialog_handlers
+            .iter()
+            .find(|(file, _)| path.ends_with(file));
         assert_eq!(
             opens_dialogs,
-            path.ends_with("settings.rs") || main_handlers,
+            path.ends_with("settings.rs") || single.is_some(),
             "{}",
             path.display()
         );
-        if main_handlers {
+        if let Some((_, handler)) = single {
             let start = text
-                .find("pub async fn connection_select(")
-                .expect("connection_select handler");
+                .find(&format!("pub async fn {handler}("))
+                .expect("the handler that opens a dialog");
             let end = text[start + 1..]
                 .find("pub async fn ")
                 .map_or(text.len(), |offset| start + 1 + offset);
-            assert_eq!(text.matches("NativePrompt::new(").count(), 1);
-            assert!(text[start..end].contains("NativePrompt::new(webview.window())"));
+            assert_eq!(text.matches("NativePrompt::new(").count(), 1, "{handler}");
+            assert!(
+                text[start..end].contains("NativePrompt::new(webview.window())"),
+                "{handler}"
+            );
         }
     }
 }

@@ -209,6 +209,21 @@ export interface ApprovalField {
   multiline: boolean;
 }
 
+/** What `approval_decide` accepts. `allow_host` also lists the fetch's host (ADR-0110). */
+export type ApprovalDecision = "approve" | "deny" | "allow_host";
+
+/** Whether Allow host is offered for a reviewed web fetch, or why not (ADR-0110). */
+export type AllowHostState = "offered" | "not_allow" | "full" | "unavailable";
+
+/**
+ * `offered` carries the exact host Allow host would list. `not_allow`: Web fetch is not Allow,
+ * so a listed host would still ask. `full`: the allowlist holds the most hosts it can.
+ * `unavailable`: the host is listed already or is not a valid host name.
+ */
+export type AllowHostView =
+  | { state: "offered"; host: string }
+  | { state: Exclude<AllowHostState, "offered"> };
+
 export interface ApprovalDetail {
   approval: ApprovalView;
   binding: "exact" | "stale" | "not_found";
@@ -217,6 +232,8 @@ export interface ApprovalDetail {
   review_token: string | null;
   /** Whether a turn waits on this approval now; approving then runs the call in that turn. */
   waiting: boolean;
+  /** Only for a pending, exact web fetch review. Advisory: Rust checks the decision again. */
+  allow_host: AllowHostView | null;
 }
 
 /**

@@ -134,6 +134,14 @@ impl DesktopError {
         Self::new("not_pending", "The approval is no longer pending.")
     }
 
+    /// The review this decision used offered no host to allow (ADR-0110).
+    pub(crate) fn allow_host_unavailable() -> Self {
+        Self::new(
+            "allow_host_unavailable",
+            "This review offered no host to allow. Review the approval again.",
+        )
+    }
+
     /// A file write needs the writers-stopped acknowledgement.
     pub(crate) fn writers_stopped_required() -> Self {
         Self::new(

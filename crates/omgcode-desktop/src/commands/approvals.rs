@@ -9,6 +9,7 @@ use tauri::Webview;
 use uuid::Uuid;
 
 use super::{Service, blocking};
+use crate::dialogs::NativePrompt;
 use crate::error::CommandError;
 use crate::policy::{Command, authorize};
 
@@ -58,11 +59,15 @@ pub async fn approval_detail(
     blocking(&state, move |service| service.approval_detail(request)).await
 }
 
-/// `approvals` only. Approves or denies one approval.
+/// `approvals` only. Approves or denies one approval, or approves a web fetch
+/// and lists its host (ADR-0110). Only `allow_host` opens a dialog: a native
+/// confirmation modal to the approvals window, which blocks the calling
+/// thread, so the service runs on the blocking pool.
 ///
 /// # Errors
 ///
-/// `forbidden_window`, or the service's error.
+/// `forbidden_window`, or the service's error (`cancelled` when the operator
+/// declines the Allow host confirmation).
 #[tauri::command(rename_all = "snake_case")]
 pub async fn approval_decide(
     webview: Webview,
@@ -73,11 +78,15 @@ pub async fn approval_decide(
     review_token: Option<String>,
 ) -> Result<ApprovalView, CommandError> {
     authorize(Command::ApprovalDecide, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
     let request = ApprovalDecideRequest {
         id,
         decision,
         writers_stopped,
         review_token,
     };
-    blocking(&state, move |service| service.approval_decide(request)).await
+    blocking(&state, move |service| {
+        service.approval_decide(request, &prompt)
+    })
+    .await
 }

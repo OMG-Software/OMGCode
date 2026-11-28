@@ -449,7 +449,8 @@ defaults to `deny`, needs `model_tools`, and does not depend on `read`,
 keep their bytes; a build before 0.64.0 refuses a settings log that holds
 another state.
 
-Each workspace also has a host allowlist of at most 32 patterns.
+Each workspace also has a host allowlist of at most 100 patterns (32 before
+0.73.0, ADR-0110; an older build refuses a settings log with more).
 `workspace web-host-add <id> <pattern> --revision <n>` adds one,
 `workspace web-host-remove <id> <pattern> --revision <n>` removes one, and
 `workspace web-host-list <id>` prints the preference and the list. A pattern
@@ -474,6 +475,22 @@ and shows the URL, its host, and whether the host is allowlisted now. The
 [execution guide](execution.md#model-web-fetch) describes the network
 policy, and [ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)
 records the design.
+
+Since 0.73.0 the desktop approvals window can also decide a pending fetch with
+**Allow host** (ADR-0110). It is offered only while `web_fetch` is `allow`, the
+host is not listed, and the list has room. After a native confirmation that
+names the host and the workspace folder, core approves the record and then
+adds the URL's exact host, never a wildcard, in one hold of the settings
+store. The host comes from core's review of the record, not from the window.
+Adding it advances the revision, so the approved record is never consumed:
+the waiting fetch is dispatched again and runs under the standing allow, and
+other pending approvals become stale. The CLI has no combined decision.
+`approvals approve` and `workspace web-host-add` are separate steps with
+separate results. A waiting desktop turn can consume the plain approval
+before the host is added, so that fetch runs once under the approval, and
+only later fetches run under the standing allow. Adding the host first makes
+the pending approval stale instead.
+See [ADR-0110](adr/0110-allow-a-web-host-from-a-fetch-approval-and-list-100-hosts.md).
 
 ## Deny, prompt, or allow (ADR-0063)
 

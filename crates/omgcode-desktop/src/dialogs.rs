@@ -6,8 +6,10 @@
 //! dialog command and no `dialog:` permission, and the chosen path goes from the
 //! dialog to core without passing through any webview.
 //!
-//! The dialogs are modal to the `settings` window and block the calling thread,
-//! so the settings handlers call the service on the blocking pool. Each dialog
+//! The dialogs are modal to the window whose command asked: the `settings`
+//! window, the `main` window for a session's provider (ADR-0071), or the
+//! `approvals` window for **Allow host** (ADR-0110). They block the calling
+//! thread, so those handlers call the service on the blocking pool. Each dialog
 //! runs on its own short-lived thread, joined before the call returns, so its
 //! COM apartment on Windows does not depend on a pooled thread's history. A
 //! dialog that cannot be shown returns no folder or no confirmation, so a
@@ -37,7 +39,7 @@ pub struct NativePrompt {
 }
 
 impl NativePrompt {
-    /// Dialogs modal to `parent`, which is the calling `settings` window.
+    /// Dialogs modal to `parent`, the window whose command asked.
     #[must_use]
     pub const fn new(parent: Window) -> Self {
         Self { parent }

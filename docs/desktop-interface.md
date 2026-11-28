@@ -139,6 +139,10 @@ merged to `main` at the time of writing):
   grant of the workspace, which its message says to revoke first. The read-write
   folder grant's confirmation says that registering normally grants the
   folder and that the sandbox has no read-write grant on it now.
+- Since version 0.73.0 (ADR-0110), a pending web fetch review under Allow
+  offers **Allow host**, which approves the fetch and adds its exact host to
+  the workspace's allowed web hosts after a native confirmation, and a
+  workspace may list 100 hosts instead of 32. See [Approvals](#approvals).
 
 Not implemented:
 
@@ -175,7 +179,9 @@ Not implemented:
   The `main` window shows nothing about the credential source beyond the
   endpoint text and the hosted label. A model the server does not list, such
   as a Thinking Machines Lab checkpoint, cannot be chosen in the model box.
-- A native operating-system confirmation dialog for approvals.
+- A native operating-system confirmation dialog for **Approve** and **Deny**.
+  Only **Allow host** (ADR-0110) opens one, because it also changes the
+  workspace's settings.
 
 Platform status. The shell was built, tested, and driven end to end on Windows
 11 (build 26300) with WebView2 on 2026-11-16. On Linux (WSL 6.6, Ubuntu 24.04)
@@ -337,7 +343,7 @@ their registered identifier, and approvals by identifier.
 | `settings_show_workspace` | main | Scope the settings window to a session's registered workspace, then show it |
 | `approvals_list` | approvals | List pending approvals and recent decisions |
 | `approval_detail` | approvals | Review one approval and obtain a review token |
-| `approval_decide` | approvals | Approve or deny one approval |
+| `approval_decide` | approvals | Approve or deny one approval, or, with `allow_host`, approve a web fetch and add its exact host to the workspace's allowlist after a native confirmation (ADR-0110) |
 | `settings_overview` | settings | Return the trusted configuration, creating an empty settings store when none exists |
 | `settings_save_chat_defaults` | settings | Save the chat budgets and the global custom instructions; no dialog (ADR-0080) |
 | `settings_set_workspace_instructions` | settings | Replace one registered workspace's custom instructions; empty removes them; no dialog (ADR-0080) |
@@ -1323,7 +1329,7 @@ waits. The window shows:
   each with a short description and a Deny, Prompt, or Allow segmented
   control. Under Web fetch, **Allowed web hosts** lists the workspace's host
   patterns, each with a remove button, and a field and **Add** button add one,
-  up to 32. Rust checks the pattern before any dialog, then adds or removes it
+  up to 100 (32 before 0.73.0, ADR-0110). Rust checks the pattern before any dialog, then adds or removes it
   through `settings_add_web_fetch_host` or `settings_remove_web_fetch_host`
   after a native confirmation, with the revision the window read. With no
   pattern it says that every fetch asks first. Under Write, the disclosure
@@ -1957,7 +1963,8 @@ The flow:
    token is random, single use, bound to the approval identifier and digest,
    valid for 120 seconds, and kept in memory only. A new detail request for the
    same approval replaces it. At most 64 tokens are outstanding. Deny needs no
-   token.
+   token. **Allow host** (ADR-0110) redeems its token before its native
+   confirmation opens, and the token returns the host core's review found.
 8. The waiting turn sees the decision within about 250 ms. An approved call
    is dispatched again, so every live check and digest is repeated, then it
    consumes the record and runs through the broker, the trusted runner, or
@@ -2003,6 +2010,25 @@ Reviewed fields:
   host is not listed, "This host is not on the workspace allowlist." A web
   fetch needs no writers-stopped checkbox, and its decision sends
   `writers_stopped: false`. Reviewing it fetches nothing and reads no file.
+  Since 0.73.0 (ADR-0110) the detail also reports `allow_host`: `offered`
+  with the exact host, `not_allow`, `full`, or `unavailable`, which core's
+  review decides. When it is `offered`, a third button, **Allow host**, sits
+  between **Deny** and **Approve**, waits the same second as **Approve**, and
+  a note says that it approves this fetch and adds the host to the
+  workspace's allowed web hosts after a system dialog. `not_allow` shows
+  "Allow host is offered only while Web fetch is Allow. Under Prompt every
+  fetch asks, even from a listed host." and `full` shows that the workspace
+  lists the most web hosts it can. The button sends `approval_decide` with
+  the decision `allow_host` and the review token, never a host: Rust takes
+  the host it kept with that token. Rust then shows a native confirmation,
+  modal to the approvals window, that names the host and the workspace
+  folder. If the operator declines it, the window says "Allow host was
+  cancelled. Nothing changed." and reviews again, because the token was
+  spent. On success the result reads "Decision recorded: approved." followed
+  by "*host* is now an allowed web host." Core appends the approval and the
+  host in one hold of the settings store; the waiting fetch runs under the
+  standing allow, and other pending approvals become stale
+  ([workspace permissions](workspace-permissions.md#web-fetch-adr-0098)).
 
 Review reads only what the approval needs:
 

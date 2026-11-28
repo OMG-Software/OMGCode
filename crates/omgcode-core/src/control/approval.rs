@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::web_hosts::ReviewedHost;
 use super::{Action, ControlError, ControlSnapshot, ControlStore, valid_uuid};
 use crate::policy::WorkspaceId;
 
@@ -302,6 +303,69 @@ impl ControlStore {
             },
             self.revision(),
         )
+    }
+
+    /// Approve one pending `network` record and add the exact host of its
+    /// reviewed URL to the workspace's `web_fetch` allowlist (ADR-0110).
+    ///
+    /// `host` comes from core's review of this approval, so it names the host
+    /// of the request whose digest the record holds. The record must still be
+    /// pending, `network`, bound to that digest, and requested under the
+    /// current settings revision, and [`Self::allow_host_refusal`] must find
+    /// nothing. The settings store does not record the URL itself.
+    ///
+    /// Both events are appended in this one hold of the settings store, so no
+    /// other reader sees the approval without the host. The approval comes
+    /// first and preserves the revision; the host advances it. The approved
+    /// record is therefore bound to the revision before the host was listed
+    /// and can never be consumed: a waiting turn dispatches the call again,
+    /// and it runs under the standing allow of the listed host. If the host
+    /// cannot be appended after the approval was, the approval stands and the
+    /// error is returned.
+    ///
+    /// # Errors
+    ///
+    /// `UnknownApproval`; `ApprovalRefused` for a record that is decided,
+    /// expired, not `network`, bound to another digest, or requested under
+    /// another revision; `WebHost` with [`WebHostRefusal::FetchNotAllow`],
+    /// `Duplicate`, or `TooMany`; and any failure to append.
+    pub fn approve_and_allow_web_host(
+        &mut self,
+        host: &ReviewedHost,
+        now_unix: u64,
+    ) -> Result<(), ControlError> {
+        let approval_id = host.approval_id();
+        let record = self.decidable_record(approval_id, now_unix)?;
+        if record.request.operation != ApprovalOperation::Network {
+            return Err(ControlError::ApprovalRefused(
+                "only a network approval can allow its host",
+            ));
+        }
+        if record.request.request_sha256 != host.request_sha256() {
+            return Err(ControlError::ApprovalRefused(
+                "the request does not match the approval",
+            ));
+        }
+        if record.request.settings_revision != self.revision() {
+            return Err(ControlError::ApprovalRefused(
+                "the settings changed after the approval was requested",
+            ));
+        }
+        let workspace_id = record.request.workspace_id;
+        if let Some(refusal) = self.allow_host_refusal(workspace_id, host.pattern()) {
+            return Err(ControlError::WebHost(refusal));
+        }
+        let revision = self.revision();
+        self.append(
+            Action::ApprovalDecided {
+                approval_id,
+                decision: ApprovalDecision::Approved,
+                writers_stopped: false,
+            },
+            revision,
+        )?;
+        self.add_web_fetch_host(workspace_id, host.pattern().as_str(), revision)
+            .map(|_| ())
     }
 
     /// The undecided, unexpired record a decision may target.

@@ -10,12 +10,13 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{Action, ControlError, ControlSnapshot, ControlStore, WorkspaceRegistration};
-use crate::policy::WorkspaceId;
+use crate::policy::{Access, WorkspaceId};
 
-/// The most host patterns one workspace may record.
-pub const MAX_WEB_FETCH_HOSTS: usize = 32;
+/// The most host patterns one workspace may record (ADR-0110).
+pub const MAX_WEB_FETCH_HOSTS: usize = 100;
 /// The longest host pattern, without the wildcard prefix.
 pub const MAX_WEB_HOST_BYTES: usize = 253;
 const MAX_LABEL_BYTES: usize = 63;
@@ -61,6 +62,10 @@ pub enum WebHostRefusal {
     NotListed,
     /// The workspace already lists the most patterns allowed.
     TooMany,
+    /// The workspace's effective `web_fetch` preference is not `allow`, so a
+    /// listed host would still ask. Only an approval's **Allow host** checks
+    /// it; the trusted CLI and the `settings` window list hosts in any state.
+    FetchNotAllow,
 }
 
 impl WebHostRefusal {
@@ -79,6 +84,7 @@ impl WebHostRefusal {
             Self::Duplicate => "web_host_duplicate",
             Self::NotListed => "web_host_not_listed",
             Self::TooMany => "web_host_too_many",
+            Self::FetchNotAllow => "web_host_fetch_not_allow",
         }
     }
 
@@ -100,7 +106,10 @@ impl WebHostRefusal {
             Self::NotCanonical => "the stored host pattern is not in canonical form",
             Self::Duplicate => "the workspace already lists this host pattern",
             Self::NotListed => "the workspace does not list this host pattern",
-            Self::TooMany => "a workspace may list at most 32 host patterns",
+            Self::TooMany => "a workspace may list at most 100 host patterns",
+            Self::FetchNotAllow => {
+                "web fetch is not allow for this workspace, so a listed host would still ask"
+            }
         }
     }
 }
@@ -246,6 +255,60 @@ impl WebHostPattern {
     }
 }
 
+/// The exact host of a reviewed `web_fetch` request, which approving its
+/// `network` approval may also add to the workspace allowlist (ADR-0110).
+///
+/// Only core's approval review builds one, from the recorded request that
+/// reproduced the approval's digest, so a caller outside core cannot name
+/// another host. It grants nothing: [`ControlStore::approve_and_allow_web_host`]
+/// checks the approval, the digest, and the workspace again when it is used.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewedHost {
+    approval_id: Uuid,
+    request_sha256: String,
+    pattern: WebHostPattern,
+}
+
+impl ReviewedHost {
+    /// The host of a reviewed request as an exact pattern.
+    ///
+    /// # Errors
+    ///
+    /// The [`WebHostRefusal`] when the host is not a valid pattern. The fetch
+    /// policy never yields a `*`, so a wildcard is refused as a bad character
+    /// rather than trusted.
+    pub(crate) fn of_review(
+        approval_id: Uuid,
+        request_sha256: &str,
+        host: &str,
+    ) -> Result<Self, WebHostRefusal> {
+        let pattern = WebHostPattern::parse(host)?;
+        if pattern.is_wildcard() {
+            return Err(WebHostRefusal::BadCharacter);
+        }
+        Ok(Self {
+            approval_id,
+            request_sha256: request_sha256.to_owned(),
+            pattern,
+        })
+    }
+
+    /// The approval whose review found this host.
+    pub const fn approval_id(&self) -> Uuid {
+        self.approval_id
+    }
+
+    /// The exact pattern that would be listed, such as `docs.example.com`.
+    pub const fn pattern(&self) -> &WebHostPattern {
+        &self.pattern
+    }
+
+    /// The digest of the reviewed request.
+    pub(super) fn request_sha256(&self) -> &str {
+        &self.request_sha256
+    }
+}
+
 /// A byte allowed inside a label.
 const fn is_name_byte(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
@@ -277,13 +340,41 @@ impl ControlStore {
             .any(|pattern| pattern.matches(host))
     }
 
+    /// Why approving a `network` approval of this workspace could not also
+    /// list `pattern` now, or `None` when it could (ADR-0110).
+    ///
+    /// The workspace's effective `web_fetch` preference must be `allow`,
+    /// because under `prompt` a listed host still asks; an unknown workspace
+    /// counts as `deny`. The pattern must not be listed yet, and the list must
+    /// have room. The caller checks the approval and the settings revision.
+    pub fn allow_host_refusal(
+        &self,
+        workspace_id: WorkspaceId,
+        pattern: &WebHostPattern,
+    ) -> Option<WebHostRefusal> {
+        let allowed = self
+            .workspace(workspace_id)
+            .is_some_and(|workspace| workspace.permissions().model_web_fetch() == Access::Allow);
+        if !allowed {
+            return Some(WebHostRefusal::FetchNotAllow);
+        }
+        let listed = self.web_fetch_hosts(workspace_id);
+        if listed.contains(pattern) {
+            Some(WebHostRefusal::Duplicate)
+        } else if listed.len() >= MAX_WEB_FETCH_HOSTS {
+            Some(WebHostRefusal::TooMany)
+        } else {
+            None
+        }
+    }
+
     /// Add one host pattern to a workspace's allowlist. This advances the
     /// settings revision and grants no authority by itself.
     ///
     /// # Errors
     ///
     /// Refuses a stale revision, an unknown workspace, an invalid or duplicate
-    /// pattern, and a workspace that already lists 32.
+    /// pattern, and a workspace that already lists 100.
     pub fn add_web_fetch_host(
         &mut self,
         workspace_id: WorkspaceId,

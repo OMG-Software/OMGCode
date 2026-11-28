@@ -1,17 +1,19 @@
 import { append, el, replaceChildren } from "../dom";
 import { approvalsApi } from "../ipc/approvals_client";
 import { toIpcError } from "../ipc/errors";
-import type { ApprovalDetail, ApprovalView } from "../ipc/types";
+import type { ApprovalDecision, ApprovalDetail, ApprovalView } from "../ipc/types";
 import { changeViews, splitChanges } from "./changes";
 import {
+  ALLOW_HOST_LABEL,
+  allowHostOffer,
   approvalEffect,
   approveGate,
   decisionArgs,
   networkNotes,
   operationLabel,
-  REVIEW_AGAIN_CODES,
   REVIEW_DELAY_MS,
   type ReviewInput,
+  reviewAgainNotice,
   WRITERS_STOPPED_TEXT,
 } from "./model";
 
@@ -34,8 +36,11 @@ export interface ReviewPanel {
 export interface ReviewHandlers {
   /** Reloads the detail for an id and shows `notice` with it. */
   reload(id: string, notice: string): Promise<void>;
-  /** Called after a decision so the list can refresh. */
-  onDecided(view: ApprovalView): void;
+  /**
+   * Called after a decision so the list can refresh. `message` is the result the review shows,
+   * which the window repeats when it moves on to the next request.
+   */
+  onDecided(view: ApprovalView, message: string): void;
 }
 
 function explanation(detail: ApprovalDetail): string | null {
@@ -110,6 +115,13 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
     approve.type = "button";
     const deny = el("button", { class: "danger", text: "Deny" });
     deny.type = "button";
+    // Offered only for a pending, exact web fetch review under Allow (ADR-0110).
+    const offeredHost = allowHostOffer(detail);
+    const allowHost = el("button", {
+      text: ALLOW_HOST_LABEL,
+      attrs: { title: `Approve, and add ${offeredHost ?? ""} to the allowed web hosts` },
+    });
+    allowHost.type = "button";
     const checkbox = el("input", { attrs: { type: "checkbox", id: "writers-stopped" } });
     const checkLabel = el(
       "label",
@@ -121,12 +133,14 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
     function sync(): void {
       const gate = approveGate(detail, input);
       approve.disabled = !gate.enabled;
+      // Allow host approves too, so it waits for the same gate.
+      allowHost.disabled = !gate.enabled;
       deny.disabled = input.busy;
       replaceChildren(hint, gate.reason ?? "");
       hint.hidden = gate.reason === null || !exact;
     }
 
-    async function decide(decision: "approve" | "deny"): Promise<void> {
+    async function decide(decision: ApprovalDecision): Promise<void> {
       const args = decisionArgs(decision, detail, input);
       input.busy = true;
       sync();
@@ -140,20 +154,24 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
         if (shown === shownCount) {
           cancelTimer();
         }
-        replaceChildren(result, `Decision recorded: ${view.state}.`);
+        const listed =
+          decision === "allow_host" && offeredHost !== null
+            ? ` ${offeredHost} is now an allowed web host.`
+            : "";
+        const message = `Decision recorded: ${view.state}.${listed}`;
+        replaceChildren(result, message);
         result.classList.remove("error");
         approve.disabled = true;
+        allowHost.disabled = true;
         deny.disabled = true;
         checkbox.disabled = true;
-        handlers.onDecided(view);
+        handlers.onDecided(view, message);
       } catch (reason) {
         const error = toIpcError(reason);
         input.busy = false;
-        if (REVIEW_AGAIN_CODES.has(error.code)) {
-          await handlers.reload(
-            detail.approval.id,
-            "The review expired or the request changed. Review it again.",
-          );
+        const notice = reviewAgainNotice(decision, error);
+        if (notice !== null) {
+          await handlers.reload(detail.approval.id, notice);
           return;
         }
         replaceChildren(result, `${error.message} (${error.code})`);
@@ -163,6 +181,7 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
     }
 
     approve.addEventListener("click", () => void decide("approve"));
+    allowHost.addEventListener("click", () => void decide("allow_host"));
     deny.addEventListener("click", () => void decide("deny"));
     checkbox.addEventListener("change", () => {
       input.writersStopped = checkbox.checked;
@@ -235,7 +254,13 @@ export function createReviewPanel(handlers: ReviewHandlers): ReviewPanel {
         { class: "review-actions" },
         effect === null ? null : el("p", { class: "effect", text: effect }),
         pending && isFile && exact ? checkLabel : null,
-        el("div", { class: "decision" }, ...(pending ? [deny, exact ? approve : null] : [])),
+        el(
+          "div",
+          { class: "decision" },
+          ...(pending
+            ? [deny, exact && offeredHost !== null ? allowHost : null, exact ? approve : null]
+            : []),
+        ),
         hint,
         result,
       ),

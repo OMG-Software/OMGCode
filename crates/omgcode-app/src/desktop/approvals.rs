@@ -10,16 +10,21 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use omgcode_core::control::{ApprovalOperation, ApprovalState, ApprovalStatus, now_unix};
+use omgcode_core::control::{
+    ApprovalOperation, ApprovalState, ApprovalStatus, ControlError, ControlStore, ReviewedHost,
+    WebHostPattern, WebHostRefusal, WorkspaceRegistration, now_unix,
+};
 use omgcode_core::session::{SessionInspection, TranscriptEntryKind};
 use omgcode_core::turn::{ApprovalReview, ReviewCandidate, display_safe_line, review_approval};
 use uuid::Uuid;
 
 use super::error::DesktopError;
 use super::review_tokens::RedeemError;
+use super::settings_changes::{ChangeGuard, Confirmation, SettingsPrompt, confirm};
+use super::state::folder_of_directory;
 use super::wire::{
-    ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList, ApprovalRequest,
-    ApprovalView, ApprovalsSummary, Binding, Decision,
+    AllowHostView, ApprovalDecideRequest, ApprovalDetail, ApprovalField, ApprovalList,
+    ApprovalRequest, ApprovalView, ApprovalsSummary, Binding, Decision,
 };
 use super::{DesktopService, Inner};
 
@@ -114,6 +119,7 @@ impl DesktopService {
                 fields: Vec::new(),
                 review_token: None,
                 waiting: false,
+                allow_host: None,
             })
         };
         if status.state != ApprovalState::Pending {
@@ -163,10 +169,13 @@ impl DesktopService {
             .map_err(|error| DesktopError::from_review(&error))?;
         match review {
             ApprovalReview::Exact(reviewed) => {
-                let token =
-                    inner
-                        .lock_reviews()?
-                        .issue(status.id, &status.request_sha256, Instant::now());
+                let (allow_host, offered) = allow_host_view(reviewed.allow_host);
+                let token = inner.lock_reviews()?.issue(
+                    status.id,
+                    &status.request_sha256,
+                    offered,
+                    Instant::now(),
+                );
                 Ok(ApprovalDetail {
                     approval: inner.view_of(&status)?,
                     binding: Binding::Exact,
@@ -182,6 +191,7 @@ impl DesktopService {
                         .collect(),
                     review_token: Some(token),
                     waiting: awaited.is_some(),
+                    allow_host,
                 })
             }
             ApprovalReview::Stale(_) => not_reviewed(Binding::Stale),
@@ -189,7 +199,8 @@ impl DesktopService {
         }
     }
 
-    /// Approve or deny one pending approval.
+    /// Approve or deny one pending approval, or approve a web fetch and list
+    /// its host.
     ///
     /// Deny needs no token. Approve first redeems the review token against the
     /// approval's current digest, read from the store in the same hold as the
@@ -197,15 +208,24 @@ impl DesktopService {
     /// needs a fresh `approval_detail`. A `file_write` approve also needs
     /// `writers_stopped` and calls core's acknowledgement path; other
     /// operations ignore the field. Core still refuses the wrong combination.
+    /// `allow_host` is described at [`Self::approval_allow_host`]; only it
+    /// uses `prompt`.
     ///
     /// # Errors
     ///
     /// `not_found`, `not_pending`, `review_expired`, `review_mismatch`,
-    /// `writers_stopped_required`, `busy`, or `control` with core's refusal.
+    /// `writers_stopped_required`, `busy`, or `control` with core's refusal,
+    /// and for `allow_host` also the errors listed there.
     pub fn approval_decide(
         &self,
         request: ApprovalDecideRequest,
+        prompt: &dyn SettingsPrompt,
     ) -> Result<ApprovalView, DesktopError> {
+        let approve = match request.decision {
+            Decision::Deny => false,
+            Decision::Approve => true,
+            Decision::AllowHost => return self.approval_allow_host(&request, prompt),
+        };
         let inner = &self.inner;
         let mut store = inner
             .open_control()?
@@ -217,34 +237,158 @@ impl DesktopService {
         if status.state != ApprovalState::Pending {
             return Err(DesktopError::not_pending());
         }
-        let decided = match request.decision {
-            Decision::Deny => store.decide_approval(request.id, false, now),
-            Decision::Approve => {
-                // Only the redeem takes the reviews lock; the store stays open
-                // so the record cannot change between the check and the decision.
-                inner.redeem(
+        let decided = if approve {
+            // Only the redeem takes the reviews lock; the store stays open so
+            // the record cannot change between the check and the decision. A
+            // host the review offered is not used by a plain approve.
+            inner.redeem(
+                request.id,
+                request.review_token.as_deref(),
+                &status.request_sha256,
+            )?;
+            if status.operation == ApprovalOperation::FileWrite {
+                if !request.writers_stopped {
+                    return Err(DesktopError::writers_stopped_required());
+                }
+                store.approve_with_writers_stopped(request.id, now)
+            } else {
+                store.decide_approval(request.id, true, now)
+            }
+        } else {
+            store.decide_approval(request.id, false, now)
+        };
+        decided.map_err(|error| DesktopError::from_control(&error))?;
+        inner.finish_decision(store, request.id, now)
+    }
+
+    /// `approval_decide` with `allow_host` (ADR-0110): approve one pending web
+    /// fetch and add the exact host core's review found to the workspace's
+    /// `web_fetch` allowlist, after a native confirmation that names the host
+    /// and the workspace folder.
+    ///
+    /// The host is the one kept with the review token, which core's review
+    /// derived from the request that reproduced the approval's digest; the
+    /// webview sends no host. The token is redeemed in the first hold of the
+    /// settings store, before the dialog, so a declined confirmation needs a
+    /// fresh review. The store is released while the dialog is open. The
+    /// second hold checks the record and the offer again, and core appends
+    /// the approval and the host together. As for every settings change from
+    /// this application, one change runs at a time.
+    ///
+    /// # Errors
+    ///
+    /// `settings_change_running`; `not_found`; `not_pending`;
+    /// `review_expired` or `review_mismatch` for a missing, spent, or foreign
+    /// token, and `review_mismatch` when the settings changed after the
+    /// request; `allow_host_unavailable` when the review offered no host;
+    /// `web_host_fetch_not_allow`, `web_host_duplicate`, or
+    /// `web_host_too_many`; `cancelled`; `busy`; `control`. If the host
+    /// cannot be recorded after the approval was, the approval stands and
+    /// `control` is returned.
+    fn approval_allow_host(
+        &self,
+        request: &ApprovalDecideRequest,
+        prompt: &dyn SettingsPrompt,
+    ) -> Result<ApprovalView, DesktopError> {
+        let inner = &self.inner;
+        let _guard = ChangeGuard::take(&inner.settings_change)?;
+        let (host, confirmation) = {
+            let store = inner
+                .open_control()?
+                .ok_or_else(|| DesktopError::not_found("approval"))?;
+            let status = pending_status(&store, request.id, now_unix())?;
+            let host = inner
+                .redeem(
                     request.id,
                     request.review_token.as_deref(),
                     &status.request_sha256,
-                )?;
-                if status.operation == ApprovalOperation::FileWrite {
-                    if !request.writers_stopped {
-                        return Err(DesktopError::writers_stopped_required());
-                    }
-                    store.approve_with_writers_stopped(request.id, now)
-                } else {
-                    store.decide_approval(request.id, true, now)
-                }
-            }
+                )?
+                .ok_or_else(DesktopError::allow_host_unavailable)?;
+            check_host_offer(&store, &status, &host)?;
+            let folder = folder_of_directory(
+                store
+                    .workspace(status.workspace_id)
+                    .and_then(WorkspaceRegistration::directory_path),
+            );
+            let confirmation = allow_host_confirmation(&folder, host.pattern());
+            (host, confirmation)
         };
-        decided.map_err(|error| DesktopError::from_control(&error))?;
-        let updated = store
-            .approval_status(request.id, now)
+        confirm(prompt, &confirmation)?;
+        let mut store = inner
+            .open_control()?
             .ok_or_else(|| DesktopError::not_found("approval"))?;
-        let statuses = store.approval_statuses(now);
-        drop(store);
-        inner.note_pending(&statuses);
-        inner.view_of(&updated)
+        let now = now_unix();
+        let status = pending_status(&store, request.id, now)?;
+        check_host_offer(&store, &status, &host)?;
+        store
+            .approve_and_allow_web_host(&host, now)
+            .map_err(|error| DesktopError::from_control(&error))?;
+        inner.finish_decision(store, request.id, now)
+    }
+}
+
+/// The status of a pending approval, or the error a decision returns.
+fn pending_status(
+    store: &ControlStore,
+    id: Uuid,
+    now: u64,
+) -> Result<ApprovalStatus, DesktopError> {
+    let status = store
+        .approval_status(id, now)
+        .ok_or_else(|| DesktopError::not_found("approval"))?;
+    if status.state == ApprovalState::Pending {
+        Ok(status)
+    } else {
+        Err(DesktopError::not_pending())
+    }
+}
+
+/// Check that Allow host still applies, before the dialog and again before
+/// the change. A settings change since the request makes the review out of
+/// date, so it is `review_mismatch` and the window reviews again. Core
+/// repeats every check when it appends.
+fn check_host_offer(
+    store: &ControlStore,
+    status: &ApprovalStatus,
+    host: &ReviewedHost,
+) -> Result<(), DesktopError> {
+    if store.revision() != status.settings_revision {
+        return Err(DesktopError::review_mismatch());
+    }
+    match store.allow_host_refusal(status.workspace_id, host.pattern()) {
+        Some(refusal) => Err(DesktopError::from_control(&ControlError::WebHost(refusal))),
+        None => Ok(()),
+    }
+}
+
+/// The wire view of core's Allow host offer, and the host to keep with the
+/// review token when it is offered.
+fn allow_host_view(
+    offer: Option<Result<ReviewedHost, WebHostRefusal>>,
+) -> (Option<AllowHostView>, Option<ReviewedHost>) {
+    match offer {
+        None => (None, None),
+        Some(Ok(host)) => {
+            let view = AllowHostView::Offered {
+                host: display_safe_line(host.pattern().as_str()),
+            };
+            (Some(view), Some(host))
+        }
+        Some(Err(WebHostRefusal::FetchNotAllow)) => (Some(AllowHostView::NotAllow), None),
+        Some(Err(WebHostRefusal::TooMany)) => (Some(AllowHostView::Full), None),
+        Some(Err(_)) => (Some(AllowHostView::Unavailable), None),
+    }
+}
+
+/// The native confirmation for Allow host. It names the exact host and the
+/// workspace folder, and says that a listed host covers every URL on it.
+fn allow_host_confirmation(workspace_folder: &str, host: &WebHostPattern) -> Confirmation {
+    let host = display_safe_line(host.as_str());
+    Confirmation {
+        title: "Allow a web host",
+        message: format!(
+            "Approve this fetch and add the host {host} to the allowed web hosts of the workspace\n{workspace_folder}?\n\nWhile web fetch is allow, the model's later fetches from {host} run without asking you, whatever their path or query. Its subdomains are not included. Other pending approvals go out of date, because the settings change.\n\nRemove the host in Settings to be asked again."
+        ),
     }
 }
 
@@ -270,13 +414,31 @@ impl Inner {
         status.ok_or_else(|| DesktopError::not_found("approval"))
     }
 
-    /// Use the review token for an approval.
+    /// Record the pending count after a decision and return the decided view.
+    /// The store is released before the index is locked for the view.
+    fn finish_decision(
+        &self,
+        store: ControlStore,
+        id: Uuid,
+        now: u64,
+    ) -> Result<ApprovalView, DesktopError> {
+        let updated = store
+            .approval_status(id, now)
+            .ok_or_else(|| DesktopError::not_found("approval"))?;
+        let statuses = store.approval_statuses(now);
+        drop(store);
+        self.note_pending(&statuses);
+        self.view_of(&updated)
+    }
+
+    /// Use the review token for an approval. On success, returns the host the
+    /// review offered for Allow host, if any.
     fn redeem(
         &self,
         approval: Uuid,
         presented: Option<&str>,
         digest: &str,
-    ) -> Result<(), DesktopError> {
+    ) -> Result<Option<ReviewedHost>, DesktopError> {
         let outcome = self
             .lock_reviews()?
             .redeem(approval, presented, digest, Instant::now());

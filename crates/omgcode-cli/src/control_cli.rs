@@ -77,7 +77,7 @@ pub(crate) enum WorkspaceCommand {
     /// name such as docs.example.com, or `*.example.com` for its subdomains
     /// only. Under `--web-fetch allow`, the model tool fetches an allowlisted
     /// host without a per-call approval. Names only: no IP address, no local
-    /// name, ASCII (use punycode). At most 32 per workspace.
+    /// name, ASCII (use punycode). At most 100 per workspace.
     WebHostAdd {
         workspace: String,
         pattern: String,
