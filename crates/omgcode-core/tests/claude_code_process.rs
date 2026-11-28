@@ -82,7 +82,8 @@ fn main() -> ExitCode {
         .filter_map(|argument| argument.to_str())
         .find(|argument| !argument.starts_with('-'))
         .map(str::to_owned);
-    let tests: [(&str, fn()); 10] = [
+    #[cfg_attr(not(unix), allow(unused_mut, reason = "one test is Unix only"))]
+    let mut tests: Vec<(&str, fn())> = vec![
         (
             "a_text_reply_streams_and_finishes",
             a_text_reply_streams_and_finishes,
@@ -120,7 +121,16 @@ fn main() -> ExitCode {
             "a_reply_the_relay_does_not_read_ends_on_cancellation",
             a_reply_the_relay_does_not_read_ends_on_cancellation,
         ),
+        (
+            "a_launch_that_starts_no_process_leaves_no_turn_record",
+            a_launch_that_starts_no_process_leaves_no_turn_record,
+        ),
     ];
+    #[cfg(unix)]
+    tests.push((
+        "a_turn_whose_record_cannot_be_written_starts_no_process",
+        a_turn_whose_record_cannot_be_written_starts_no_process,
+    ));
     let mut failed = 0;
     let mut ran = 0;
     for (name, test) in tests {
@@ -255,6 +265,26 @@ impl Scene {
             sign_in,
             config,
         }
+    }
+
+    /// The recorded connection's profile identifier.
+    fn profile_id(&self) -> uuid::Uuid {
+        ControlStore::open(&self.data)
+            .expect("control store")
+            .claude_code_setup("claude")
+            .expect("connection")
+            .0
+    }
+
+    /// The names of the turn records left in the connection's storage.
+    fn turn_records(&self) -> Vec<String> {
+        fs::read_dir(self.data.join("claude-code"))
+            .expect("the connection's storage")
+            .filter_map(|entry| {
+                let name = entry.expect("entry").file_name().into_string().ok()?;
+                name.ends_with(".unconfirmed").then_some(name)
+            })
+            .collect()
     }
 
     /// A client for the next turn. The fake's marks of an earlier run are
@@ -485,6 +515,74 @@ fn a_failed_sign_in_is_named() {
         &CancelToken::new(),
     ));
     assert_eq!(failure, ClaudeCodeFailure::NotSignedIn);
+}
+
+/// A launch that fails after its turn record was written, but before any
+/// process started, clears the record and releases the turn lock: nothing
+/// ran, so nothing is left for the operator to acknowledge.
+fn a_launch_that_starts_no_process_leaves_no_turn_record() {
+    let mut scene = Scene::new();
+    scene.config.program = scene.config.program.with_file_name(if cfg!(windows) {
+        "missing-claude.exe"
+    } else {
+        "missing-claude"
+    });
+    let result =
+        scene
+            .client()
+            .complete_streaming(&messages("hello"), &mut |_| {}, &CancelToken::new());
+    assert!(
+        result.is_err(),
+        "a missing program cannot reply: {result:?}"
+    );
+    assert!(
+        !fake_claude::started(&scene.sign_in),
+        "{}",
+        fake_claude::diagnosis(&scene.sign_in)
+    );
+    assert_eq!(scene.turn_records(), Vec::<String>::new());
+    wait_for_claude_code_turns(&scene.data, scene.profile_id(), Duration::from_secs(5))
+        .expect("the turn left no record and released its lock");
+}
+
+/// A turn whose record cannot be written starts no process: without its
+/// record, an OMGCode process that ended before the tree did would leave
+/// nothing to fail a later wait. Here the connection's storage refuses new
+/// entries, while the turn lock file already exists and opens.
+#[cfg(unix)]
+fn a_turn_whose_record_cannot_be_written_starts_no_process() {
+    use std::os::unix::fs::PermissionsExt;
+    let scene = Scene::new();
+    let profile_id = scene.profile_id();
+    // Makes the turn lock file, and finds nothing to acknowledge.
+    assert!(
+        !omgcode_core::control::acknowledge_claude_code_cleanup(&scene.data, profile_id)
+            .expect("the turn lock file")
+    );
+    let storage = scene.data.join("claude-code");
+    fs::set_permissions(&storage, fs::Permissions::from_mode(0o500)).expect("refuse new entries");
+    let probe = fs::File::create_new(storage.join("probe"));
+    let result = probe.is_err().then(|| {
+        scene
+            .client()
+            .complete_streaming(&messages("hello"), &mut |_| {}, &CancelToken::new())
+    });
+    fs::set_permissions(&storage, fs::Permissions::from_mode(0o700)).expect("restore the mode");
+    let Some(result) = result else {
+        let _ = fs::remove_file(storage.join("probe"));
+        panic!(
+            "the storage folder still took a new entry; run this test as a user other than root"
+        );
+    };
+    assert_eq!(claude_failure(result), ClaudeCodeFailure::Failed);
+    assert!(
+        !fake_claude::started(&scene.sign_in),
+        "{}",
+        fake_claude::diagnosis(&scene.sign_in)
+    );
+    assert_eq!(scene.turn_records(), Vec::<String>::new());
+    wait_for_claude_code_turns(&scene.data, profile_id, Duration::from_secs(5))
+        .expect("the refused turn released its lock");
 }
 
 /// A relay that presents the wrong nonce is disconnected, and the run fails

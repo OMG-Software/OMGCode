@@ -297,6 +297,14 @@ pub fn processes_running(sign_in: &Path) -> bool {
     })
 }
 
+/// Whether a fake started for this sign-in folder since its marks were last
+/// forgotten.
+#[allow(dead_code, reason = "only the core process tests check for no start")]
+#[must_use]
+pub fn started(sign_in: &Path) -> bool {
+    sign_in.join(STARTED_FILE).is_file()
+}
+
 /// Mark the start in the sign-in folder, hold the fake's alive lock there,
 /// and record a later panic there.
 fn record_start() {
