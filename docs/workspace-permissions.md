@@ -484,8 +484,12 @@ adds the URL's exact host, never a wildcard, in one hold of the settings
 store. The host comes from core's review of the record, not from the window.
 Adding it advances the revision, so the approved record is never consumed:
 the waiting fetch is dispatched again and runs under the standing allow, and
-other pending approvals become stale. The CLI has no combined decision;
-`approvals approve` followed by `workspace web-host-add` has the same effect.
+other pending approvals become stale. The CLI has no combined decision.
+`approvals approve` and `workspace web-host-add` are separate steps with
+separate results. A waiting desktop turn can consume the plain approval
+before the host is added, so that fetch runs once under the approval, and
+only later fetches run under the standing allow. Adding the host first makes
+the pending approval stale instead.
 See [ADR-0110](adr/0110-allow-a-web-host-from-a-fetch-approval-and-list-100-hosts.md).
 
 ## Deny, prompt, or allow (ADR-0063)

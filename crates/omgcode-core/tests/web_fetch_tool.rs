@@ -23,8 +23,9 @@ use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage,
 use omgcode_core::session::{CompactionRecord, MessageRole, RequestManifest, SessionJournal};
 use omgcode_core::turn::{
     ApprovalReview, ApprovalWaitSlot, AwaitedCall, CancelToken, ModelError, ReviewCandidate,
-    TOOL_SCHEMA_VERSION, ToolCall, ToolCallError, ToolModel, ToolModelReply, ToolModelRequest,
-    TurnError, TurnLimits, TurnReport, TurnRuntime, WITHHELD_TOOL_RESULT, review_approval,
+    ReviewError, TOOL_SCHEMA_VERSION, ToolCall, ToolCallError, ToolModel, ToolModelReply,
+    ToolModelRequest, TurnError, TurnLimits, TurnReport, TurnRuntime, WITHHELD_TOOL_RESULT,
+    review_approval,
 };
 use omgcode_core::web_fetch::{
     DEFAULT_RESULT_BYTES, FetchError, FetchOutcome, FetchUrl, FetchedPage, MAX_RESULT_BYTES,
@@ -964,13 +965,23 @@ fn allow_host_when_waiting(
             .expect("control store")
             .approval_status(waiting.approval_id, now_unix())
             .expect("the awaited approval");
-        let candidate = ReviewCandidate {
-            tool: &waiting.tool,
-            arguments: &waiting.arguments,
+        // The review opens the settings store without waiting, while the
+        // waiting turn polls the same store, so a review can meet `Busy`.
+        // It only reads, so retry it until the deadline; the decision below
+        // waits for the store and is made once.
+        let review = loop {
+            let candidate = ReviewCandidate {
+                tool: &waiting.tool,
+                arguments: &waiting.arguments,
+            };
+            match review_approval(&data, &status, &[candidate]) {
+                Err(ReviewError::Busy) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => break other.expect("review"),
+            }
         };
-        let ApprovalReview::Exact(reviewed) =
-            review_approval(&data, &status, &[candidate]).expect("review")
-        else {
+        let ApprovalReview::Exact(reviewed) = review else {
             panic!("the awaited call reproduces its digest");
         };
         let host = reviewed

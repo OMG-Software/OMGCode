@@ -102,8 +102,11 @@ CLI, the `settings` window, and **Allow host** share the limit.
 - If the host cannot be appended after the approval was, the approval stands
   and the error is returned. The revision is then unchanged, so the waiting
   turn consumes the approval and runs the fetch once, as after **Approve**.
-- The CLI has no combined decision. `approvals approve` followed by
-  `workspace web-host-add` has the same effect.
+- The CLI has no combined decision. `approvals approve` and
+  `workspace web-host-add` are separate steps. A waiting desktop turn can
+  consume the plain approval before the host is added, so that fetch runs
+  once under the approval, and only later fetches run under the standing
+  allow. Adding the host first makes the pending approval stale.
 - Older OMGCode versions refuse a settings log in which a workspace lists
   more than 32 hosts.
 - Automated tests cover core's review and decision, the desktop service with

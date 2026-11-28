@@ -179,7 +179,9 @@ Not implemented:
   The `main` window shows nothing about the credential source beyond the
   endpoint text and the hosted label. A model the server does not list, such
   as a Thinking Machines Lab checkpoint, cannot be chosen in the model box.
-- A native operating-system confirmation dialog for approvals.
+- A native operating-system confirmation dialog for **Approve** and **Deny**.
+  Only **Allow host** (ADR-0110) opens one, because it also changes the
+  workspace's settings.
 
 Platform status. The shell was built, tested, and driven end to end on Windows
 11 (build 26300) with WebView2 on 2026-11-16. On Linux (WSL 6.6, Ubuntu 24.04)
