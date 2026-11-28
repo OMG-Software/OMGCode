@@ -259,8 +259,12 @@ Haiku request with one tool call.
    text kept back before it, passes the budget below. The round fails on it
    first. Status output, input that reached the process, and text or
    messages the round accepts do not hold the calls back.
-   The main agent's streamed and final text share an 8 MiB budget, and more
-   fails the turn as too large. A `result` counts only after the whole prompt
+   The main agent's streamed text and its final text each have an 8 MiB
+   budget, and more fails the turn as too large. One count for both would
+   charge the same text twice, because the final message repeats what its
+   deltas streamed, and halve an honest reply's budget; an HTTP stream
+   likewise forwards at most 8 MiB and assembles a reply no larger. A
+   `result` counts only after the whole prompt
    was written. After the tree ends, each worker thread is joined within five
    seconds.
 5. **Lockdown is checked, and it fails closed.** The `system/init` event must

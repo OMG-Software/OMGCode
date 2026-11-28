@@ -1021,7 +1021,8 @@ and a tool turn keeps that process for all its rounds.
   a tool the lockdown refuses, a failed sign-in, a result while the calls
   would be held, or text past the budget once added to the text queued
   before it. Status output and accepted text and messages do not hold the
-  calls back. The main agent's text has an 8 MiB budget. The Linux folder has a random
+  calls back. The main agent's streamed text and its final text, which
+  repeats it, each have an 8 MiB budget. The Linux folder has a random
   name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
   that is unset, relative, or too long, because a socket path must fit in
   107 bytes and one beneath application storage does not.

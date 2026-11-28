@@ -163,7 +163,8 @@ and an authentication mode. Kinds are `lm_studio`, `ollama_local`,
 `claude_code`, which only `workspace claude-code-add` records
 ([below](#claude-code-connection-adr-0109)). Modes are
 `subscription`, `api_key`, and `none`. Subscription is accepted only for
-OpenAI, Anthropic, and Claude Code, which accepts nothing else. Since ADR-0093 an `openai` subscription profile with
+OpenAI, Anthropic, and Claude Code, and the `claude_code` kind accepts only
+`subscription`. Since ADR-0093 an `openai` subscription profile with
 OpenAI's fixed endpoint can sign in with ChatGPT
 ([below](#chatgpt-sign-in-adr-0093)); no adapter reads an `anthropic` one. API keys are accepted for LM
 Studio and every hosted kind. Since ADR-0071 an `ollama_cloud` profile also

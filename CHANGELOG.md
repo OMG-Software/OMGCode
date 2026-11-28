@@ -102,8 +102,8 @@ Changes are recorded here before a release version is assigned.
   fully arrived, a second init report, a tool or message naming a refused
   tool, a failed sign-in, a result while the calls would be held, or text
   past the budget; status output and accepted text do not hold them back.
-  The main agent's text has an 8 MiB
-  budget, a sub-agent's text
+  The main agent's streamed text and its final text, which repeats it, each
+  have an 8 MiB budget, a sub-agent's text
   delta is checked before it is ignored, a reused MCP request identifier is
   refused, the rendered prompt's size is checked before it is copied, a
   call whose cancellation is already queued is retired before any call is
