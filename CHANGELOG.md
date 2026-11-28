@@ -35,11 +35,28 @@ Changes are recorded here before a release version is assigned.
   trusted process serves MCP and holds each `tools/call` open while the turn
   runtime checks, approves, dispatches, and journals it as for every other
   provider. Failures are `claude_code_not_signed_in`, `claude_code_protocol`,
-  and `claude_code_failed`; a request manifest records the endpoint label
-  `claude-code:<profile>`. The desktop shell, the active selection, and
+  `claude_code_failed`, and `claude_code_withdrawn`, in chat and in
+  compaction; a request manifest records the endpoint label
+  `claude-code:<profile>`. Each process holds a shared turn lock beside the
+  runtime folder, checks every settings state since its turn resolved the
+  connection before it starts, and is ended by a watcher when a later state
+  revokes one of its grants or removes it. `workspace claude-code-revoke`,
+  `workspace provider-profile-remove`, and the `settings` window's removal
+  wait up to 30 seconds for those processes to end, or fail with a
+  `control` error that says the change is recorded. The sign-in folder
+  stays apart from every workspace container grant and every other
+  connection's sign-in folder, a grant checks its whole plan before it
+  records anything, and revoking retries a container profile deletion that
+  was interrupted. At most eight output events queue for the turn, every
+  relay write has a deadline, the main agent's text has an 8 MiB budget,
+  a reused MCP request identifier is refused, and the rendered prompt's
+  size is checked before it is copied. The desktop shell, the active selection, and
   `models` refuse the profile with `claude_code_cli_only`. The platform crate
   gains a confined spawn with streamed standard input and output and a
-  container-only local pipe and private Unix socket. Two harnessless test
+  container-only local pipe and private Unix socket, and
+  `ProcessError::CleanupUnconfirmed` now carries an `UnconfirmedCleanup`
+  with the native cause: a failed termination or emptiness check no longer
+  counts as a confirmed cleanup, so the tree's fallback kill still runs. Two harnessless test
   binaries use a fake `claude`, on Windows inside the real AppContainer with
   real grants, through the core runtime and the CLI commands. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain

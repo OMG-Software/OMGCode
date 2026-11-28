@@ -78,8 +78,11 @@ Haiku request with one tool call.
    configuration only: it does not show that Anthropic approves the route.
 2. **The operator signs in, and OMGCode stays out of it.** The operator runs
    `claude auth login` with `CLAUDE_CONFIG_DIR` set to a folder used only for
-   OMGCode, outside application storage, the development root, and every
-   workspace. OMGCode has no Claude sign-in command. It never opens, reads,
+   OMGCode, outside application storage, the development root, every
+   workspace, every workspace container grant, and every other connection's
+   sign-in folder. Recording the connection, granting it, changing the
+   development root, adding a workspace container grant, and every turn
+   check this. OMGCode has no Claude sign-in command. It never opens, reads,
    copies, stores, or passes a file or token from that folder. It only checks
    the folder's identity, sets `CLAUDE_CONFIG_DIR` for the child, and, on
    Windows, grants the child's container access to the folder.
@@ -98,8 +101,10 @@ Haiku request with one tool call.
    and it cannot write there. Each grant is recorded before and after its
    ACL change, as workspace grants are. A profile with grants cannot be
    removed; `workspace claude-code-revoke` revokes them all and deletes the
-   container profile. Every turn checks that each role holds an active grant
-   for the folder it names. A workspace container is never used: a model-run
+   container profile, also when no grant remains, so an interrupted deletion
+   can be retried, and refuses a profile of another kind. A grant checks its
+   whole plan before it records the first intent. Every turn checks that each
+   role holds an active grant for the folder it names. A workspace container is never used: a model-run
    command there must not reach the sign-in folder, and the workspace
    container must not gain a network capability. On Linux, Landlock allows
    reading the program and relay folders, the per-turn folder, the system
@@ -111,6 +116,23 @@ Haiku request with one tool call.
    of memory, 512 processes, and four hours of CPU time), so on Linux the
    CLI must run in a delegated cgroup, as `run` does. Neither platform limits
    the child to Anthropic's hosts.
+
+   A revocation or removal stops the connection's running turns, as ADR-0061
+   does for runs. Each `claude` process holds a shared lock on the
+   connection's turn lock file, `claude-code/<profile id>.turns`, which lies
+   beside the runtime folder and outside every grant. Before the per-turn
+   folder is made, the turn takes that lock and checks every settings state
+   recorded since it resolved the connection. It releases the lock only after
+   the tree was observed ended. While the process runs, a watcher thread
+   checks each later state every 100 ms. A state that removes the connection
+   or, on Windows, leaves one of its roles without an active grant ends the
+   tree, and the turn fails with `claude_code_withdrawn`. Unreadable settings
+   withdraw the turn too; settings that another command holds are read on the
+   next poll. `workspace claude-code-revoke`, `workspace
+   provider-profile-remove`, and the `settings` window's removal record their
+   change, release the settings, and then wait up to 30 seconds for an
+   exclusive lock. When a turn does not end in time, the command fails with a
+   `control` error that says the change is recorded.
 4. **One process per model request, launched locked down.** A tool turn
    keeps one `claude` process for all its rounds; a text turn and each
    compaction summary start their own. Each run writes a fresh per-turn
@@ -142,7 +164,14 @@ Haiku request with one tool call.
    MCP configuration with no servers. The prompt goes to stdin as text, and
    stdin is then closed. The process deadline is one hour; each model
    request also waits at most the turn timeout (`chat`) or 600 seconds
-   (`session compact`).
+   (`session compact`). A cancelled turn starts no process. The reader
+   threads hand the turn at most eight queued events, so a turn that is
+   running a call or waiting for an approval holds back the process's output.
+   Every write to the relay ends at the request timeout or on cancellation.
+   The main agent's streamed and final text share an 8 MiB budget, and more
+   fails the turn as too large. A `result` counts only after the whole prompt
+   was written. After the tree ends, each worker thread is joined within five
+   seconds.
 5. **Lockdown is checked, and it fails closed.** The `system/init` event must
    satisfy all of these, or the tree is terminated and the turn fails with
    `claude_code_lockdown`:
@@ -172,11 +201,15 @@ Haiku request with one tool call.
    MCP handling stays in the trusted process. It answers `server/discover`
    with `-32601` so the observed client falls back to `initialize` at
    `2025-11-25`, offers only `tools`, and never sends a request to the
-   client. A relay that does not connect within 60 seconds fails the run.
+   client. A request identifier may be used once per session; the server
+   records at most 4096 and then refuses further requests, and a stream
+   line's `type` and `subtype` must be strings. A relay that does not connect
+   within 60 seconds fails the run.
 7. **The adapter is an ordinary `ToolModel`.** `ClaudeCodeModel` implements
    the core `ToolModel` trait. On a round it returns each pending
    `tools/call` as a tool call: the identifier is its `claudecode/toolUseId`
-   (or `omgcode_call_N` when absent), the name is the MCP name, and the
+   (or, when absent, `omgcode_call_N` with an `N` that no other call of the
+   round uses), the name is the MCP name, and the
    arguments are re-serialised. A round holds at most eight calls and
    returns once it is full, once every announced tool block has arrived, or
    200 ms after the last call. The MCP request stays open while the turn
@@ -194,14 +227,16 @@ Haiku request with one tool call.
    under a label that carries a random per-turn marker. The labels are
    advice to the model, not a security boundary: the transcript is
    untrusted conversation data, as every provider's history is. The
-   rendered prompt is at most 4 MiB. Within a turn, claude keeps its own
-   context.
+   rendered prompt is at most 4 MiB, checked before any part is copied.
+   Within a turn, claude keeps its own context.
 9. **Failures are named.** A failure that the launch, sign-in, lockdown,
-   protocol, or child exit causes is reported as one of
+   protocol, child exit, or a withdrawal causes is reported as one of
    `claude_code_not_signed_in`, `claude_code_lockdown`,
-   `claude_code_protocol`, or `claude_code_failed`. Cancellation and the
-   deadlines terminate the tree, and its end is observed before the turn
-   returns. Each request manifest records the endpoint label
+   `claude_code_protocol`, `claude_code_failed`, or `claude_code_withdrawn`,
+   in a chat turn and in compaction alike. Cancellation and the deadlines
+   terminate the tree, and its end is observed before the turn returns. A
+   failed termination or emptiness check counts as unconfirmed cleanup, so
+   the tree's own fallback kill still runs. Each request manifest records the endpoint label
    `claude-code:<profile>`, which is not a URL.
 10. **The trusted CLI only, for now.** `chat --provider-profile` and
     `session compact --provider-profile` resolve a `claude_code` profile.
@@ -257,6 +292,10 @@ Haiku request with one tool call.
   A `claude` update that moves the program to another folder makes the
   recorded program stale; the connection is then refused until it is
   revoked, removed, and recorded again.
+- A revocation or removal waits up to 30 seconds for running turns. The
+  wait proves the processes ended, not that their effects were undone: text
+  streamed before the change was already shown, and tool calls that ran
+  before it stay journaled. The failed turn records no reply.
 - The lockdown check follows the first model request. Tool-block checks,
   `--tools ""`, `--permission-prompts none`, and the sandbox cover that gap.
 - The CLI's stream and MCP shapes are not a published stable contract. A
@@ -264,8 +303,8 @@ Haiku request with one tool call.
   such changes into a refused turn.
 - A fake `claude` drives the whole path in the tests, on Windows inside the
   connection's real AppContainer with real grants: the confined launch, the
-  pipe and nonce, the MCP server, the turn runtime, the CLI commands, and
-  compaction. The same tests passed on Linux under WSL 2 (Ubuntu 24.04) in
+  pipe and nonce, the MCP server, the turn runtime, a revocation during a
+  running turn, the CLI commands, and compaction. The same tests passed on Linux under WSL 2 (Ubuntu 24.04) in
   a delegated cgroup; the first Linux run found the socket path too long
   for `sun_path`, which decision 6 now avoids. Not yet verified: a
   signed-in turn of the real `claude` on either platform, Linux outside

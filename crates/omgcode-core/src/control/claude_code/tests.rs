@@ -619,6 +619,191 @@ fn connections_keep_separate_sign_in_folders() {
     );
 }
 
+/// Record an applied grant for every role without changing an ACL, so a
+/// connection resolves on Windows, and return the grant identifiers by role.
+fn record_claude_code_grants(
+    store: &mut ControlStore,
+    scene: &Scene,
+    profile_id: Uuid,
+) -> Vec<(ClaudeCodeGrantRole, Uuid)> {
+    let data = store.data_directory.live_path().expect("data directory");
+    let runtime = claude_code_runtime_folder(&data, profile_id);
+    fs::create_dir_all(&runtime).expect("runtime folder");
+    let program_folder = scene.program.parent().expect("program folder").to_owned();
+    let mut recorded = Vec::new();
+    for (role, folder) in [
+        (ClaudeCodeGrantRole::Program, &program_folder),
+        (ClaudeCodeGrantRole::Configuration, &scene.sign_in),
+        (ClaudeCodeGrantRole::Runtime, &runtime),
+        (ClaudeCodeGrantRole::Relay, &scene.relay),
+    ] {
+        recorded.push((
+            role,
+            record_claude_code_grant(store, profile_id, role, folder),
+        ));
+    }
+    recorded
+}
+
+fn record_claude_code_grant(
+    store: &mut ControlStore,
+    profile_id: Uuid,
+    role: ClaudeCodeGrantRole,
+    folder: &Path,
+) -> Uuid {
+    let grant = grant_for(profile_id, role, folder);
+    let grant_id = grant.id;
+    let revision = store.next_revision().expect("revision");
+    store
+        .append(Action::ClaudeCodeGrantRequested { grant }, revision)
+        .expect("request");
+    store
+        .append(
+            Action::ClaudeCodeGrantApplied { grant_id },
+            store.revision(),
+        )
+        .expect("applied");
+    grant_id
+}
+
+fn record_claude_code_revocation(store: &mut ControlStore, grant_id: Uuid) {
+    for action in [
+        Action::ClaudeCodeRevokeRequested { grant_id },
+        Action::ClaudeCodeGrantRevoked { grant_id },
+    ] {
+        store.append(action, store.revision()).expect("revocation");
+    }
+}
+
+/// A recorded connection, granted on Windows, resolved for one turn. The
+/// store is released, so the turn's checks can read the settings.
+fn resolved_turn(scene: &Scene) -> (Uuid, Vec<(ClaudeCodeGrantRole, Uuid)>, ClaudeCodeWatch) {
+    let mut store = scene.store();
+    let profile = store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    let grants = if cfg!(windows) {
+        record_claude_code_grants(&mut store, scene, profile.id())
+    } else {
+        Vec::new()
+    };
+    let relay = scene.relay.join(PROGRAM_NAME);
+    fs::write(&relay, b"not a real relay").expect("relay");
+    let paths = store
+        .resolve_claude_code("claude", &relay)
+        .expect("resolved");
+    (profile.id(), grants, paths.watch)
+}
+
+/// A running turn checks every settings state recorded after it resolved
+/// its connection: unchanged settings allow it, settings that another
+/// command holds are checked again later, and a removed connection
+/// withdraws it.
+#[test]
+fn a_running_turn_is_withdrawn_when_its_connection_is_removed() {
+    let scene = Scene::new();
+    let (profile_id, grants, watch) = resolved_turn(&scene);
+    let mut cursor = watch.cursor();
+    assert_eq!(watch.recheck(&mut cursor), Recheck::Allowed);
+    assert_eq!(watch.recheck(&mut cursor), Recheck::Allowed, "unchanged");
+
+    let mut store = ControlStore::open(&scene.data).expect("store");
+    assert_eq!(
+        watch.recheck(&mut cursor),
+        Recheck::Allowed,
+        "opening the settings changes nothing"
+    );
+    for (_, grant_id) in grants {
+        record_claude_code_revocation(&mut store, grant_id);
+    }
+    let removed = store
+        .remove_provider_profile("claude", store.revision())
+        .expect("removed");
+    assert_eq!(removed.profile_id, profile_id);
+    // A new connection with the same name is another connection.
+    store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile again");
+    assert_eq!(
+        watch.recheck(&mut cursor),
+        Recheck::Busy,
+        "changed settings that another command holds are read later"
+    );
+    drop(store);
+    let expected = if cfg!(windows) {
+        "a grant of the Claude Code connection was revoked"
+    } else {
+        "the Claude Code connection was removed"
+    };
+    assert_eq!(watch.recheck(&mut cursor), Recheck::Withdrawn(expected));
+    let store = ControlStore::open(&scene.data).expect("store");
+    assert_eq!(
+        store.claude_code_withdrawn(profile_id),
+        Some("the Claude Code connection was removed")
+    );
+}
+
+/// A grant revoked and then granted again before the turn checks the
+/// settings still withdraws the turn: the state between is checked too.
+#[cfg(windows)]
+#[test]
+fn a_grant_revoked_and_restored_between_checks_still_withdraws_the_turn() {
+    let scene = Scene::new();
+    let (profile_id, grants, watch) = resolved_turn(&scene);
+    let mut cursor = watch.cursor();
+    assert_eq!(watch.recheck(&mut cursor), Recheck::Allowed);
+
+    let mut store = ControlStore::open(&scene.data).expect("store");
+    let (role, grant_id) = grants[0];
+    record_claude_code_revocation(&mut store, grant_id);
+    record_claude_code_grant(
+        &mut store,
+        profile_id,
+        role,
+        scene.program.parent().expect("folder"),
+    );
+    assert_eq!(store.claude_code_withdrawn(profile_id), None, "restored");
+    drop(store);
+    assert_eq!(
+        watch.recheck(&mut cursor),
+        Recheck::Withdrawn("a grant of the Claude Code connection was revoked")
+    );
+}
+
+/// A revocation waits until every running turn released the connection's
+/// shared turn lock, and a revocation that holds the lock keeps a new turn
+/// from starting.
+#[test]
+fn a_revocation_waits_for_every_running_turn() {
+    let scene = Scene::new();
+    let (profile_id, _, watch) = resolved_turn(&scene);
+    let short = std::time::Duration::from_millis(200);
+    wait_for_claude_code_turns(&scene.data, profile_id, short).expect("no turn ever started");
+
+    let first = watch.lock_turn().expect("lock").expect("free");
+    let second = watch.lock_turn().expect("lock").expect("shared by turns");
+    assert!(matches!(
+        wait_for_claude_code_turns(&scene.data, profile_id, short),
+        Err(ControlError::ClaudeCodeTurnsRunning)
+    ));
+    drop(first);
+    assert!(matches!(
+        wait_for_claude_code_turns(&scene.data, profile_id, short),
+        Err(ControlError::ClaudeCodeTurnsRunning)
+    ));
+    drop(second);
+    wait_for_claude_code_turns(&scene.data, profile_id, short).expect("every turn ended");
+
+    let path = super::turns::turn_lock_path(&scene.data, profile_id);
+    let revocation = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .expect("lock file");
+    revocation.try_lock().expect("exclusive");
+    assert!(watch.lock_turn().expect("lock").is_none());
+}
+
 #[cfg(not(windows))]
 #[test]
 fn other_platforms_refuse_claude_code_grants_without_recording_them() {

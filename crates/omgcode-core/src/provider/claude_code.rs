@@ -21,6 +21,7 @@ pub mod launch;
 pub mod mcp;
 pub mod model;
 pub mod stream;
+mod watch;
 
 pub use launch::{
     ClaudeCodeClient, ClaudeCodeConfig, RELAY_NONCE_VARIABLE, RELAY_SUBCOMMAND, relay,
@@ -41,6 +42,10 @@ pub enum ClaudeCodeFailure {
     /// The process could not start, ended, failed, or timed out before its
     /// result.
     Failed,
+    /// A recorded settings change revoked a grant of the connection or
+    /// removed it while the turn ran, or the settings could not be checked;
+    /// the process was ended.
+    Withdrawn,
 }
 
 impl ClaudeCodeFailure {
@@ -51,6 +56,7 @@ impl ClaudeCodeFailure {
             Self::Lockdown => "claude_code_lockdown",
             Self::Protocol => "claude_code_protocol",
             Self::Failed => "claude_code_failed",
+            Self::Withdrawn => "claude_code_withdrawn",
         }
     }
 
@@ -68,6 +74,9 @@ impl ClaudeCodeFailure {
             }
             Self::Failed => {
                 "the Claude Code process could not start, or failed, exited, or timed out before its result"
+            }
+            Self::Withdrawn => {
+                "the settings revoked a grant of this Claude Code connection or removed it during the turn, or could not be checked; the process was ended"
             }
         }
     }

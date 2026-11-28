@@ -4,9 +4,9 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    AssignmentFailure, ClaudeCodeDeclaration, ContainerGrantAccess, ControlError, ControlStore,
-    CredentialId, FolderGrant, PackageProfileDeclaration, ProfileDeclaration,
-    ProviderProfileDeclaration, Revocations,
+    AssignmentFailure, CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ContainerGrantAccess,
+    ControlError, ControlStore, CredentialId, FolderGrant, PackageProfileDeclaration,
+    ProfileDeclaration, ProviderProfileDeclaration, Revocations, wait_for_claude_code_turns,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -289,7 +289,8 @@ pub(crate) enum WorkspaceCommand {
         revision: u64,
     },
     /// Revoke every grant of a Claude Code connection and delete its
-    /// AppContainer profile. A connection is removed with
+    /// AppContainer profile, then wait up to 30 seconds until every running
+    /// turn of the connection has ended. A connection is removed with
     /// `provider-profile-remove` only after this.
     ClaudeCodeRevoke { name: String },
 }
@@ -872,11 +873,18 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         WorkspaceCommand::ProviderProfileRemove { name, revision } => {
             let mut store = open_existing(data_root)?
                 .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            // Read before the removal: a removed Claude Code connection's
+            // running turns end, and the command waits for them.
+            let claude_code = store.claude_code_setup(&name).ok().map(|(id, _)| id);
             let output = credential_cli::remove_profile(&mut store, data_root, &name, revision)?;
             let listed = withdrawn_runs(&store);
             drop(store);
+            let turns_ended = claude_code.map_or(Ok(()), |profile_id| {
+                wait_for_claude_code_turns(data_root, profile_id, CLAUDE_CODE_TURN_STOP_WAIT)
+            });
             stop_withdrawn_runs(data_root, listed.as_deref().unwrap_or(&[]))?;
             listed?;
+            turns_ended.map_err(control_error)?;
             print_json(&output)
         }
         WorkspaceCommand::ProviderCredentialSet { name, revision } => {
@@ -943,10 +951,23 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
             let revocation = store
                 .revoke_claude_code_grants(&name)
                 .map_err(control_error)?;
-            print_json(&json!({
+            let output = json!({
                 "revocation": revocation,
                 "snapshot": store.snapshot(),
-            }))
+            });
+            // The running turns' watchers read the revocation only once the
+            // settings are released; the command reports success only after
+            // every process of the connection was observed ended.
+            drop(store);
+            if revocation.turns_withdrawn {
+                wait_for_claude_code_turns(
+                    data_root,
+                    revocation.profile_id,
+                    CLAUDE_CODE_TURN_STOP_WAIT,
+                )
+                .map_err(control_error)?;
+            }
+            print_json(&output)
         }
         WorkspaceCommand::ContainerRevoke { grant } => {
             let mut store = open_existing(data_root)?

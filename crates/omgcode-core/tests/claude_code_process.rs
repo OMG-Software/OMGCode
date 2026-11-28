@@ -20,7 +20,9 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 use omgcode_core::action_journal::{ActionDisposition, ActionJournal, ActionRecord, ActionTool};
-use omgcode_core::control::{ClaudeCodeDeclaration, ControlStore};
+use omgcode_core::control::{
+    CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ControlStore, wait_for_claude_code_turns,
+};
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, ModelMessage, ModelRole};
 use omgcode_core::provider::claude_code::{
@@ -80,7 +82,7 @@ fn main() -> ExitCode {
         .filter_map(|argument| argument.to_str())
         .find(|argument| !argument.starts_with('-'))
         .map(str::to_owned);
-    let tests: [(&str, fn()); 7] = [
+    let tests: [(&str, fn()); 8] = [
         (
             "a_text_reply_streams_and_finishes",
             a_text_reply_streams_and_finishes,
@@ -105,6 +107,10 @@ fn main() -> ExitCode {
         (
             "cancellation_ends_the_process_promptly",
             cancellation_ends_the_process_promptly,
+        ),
+        (
+            "a_withdrawn_connection_ends_its_running_turn",
+            a_withdrawn_connection_ends_its_running_turn,
         ),
     ];
     let mut failed = 0;
@@ -227,6 +233,7 @@ impl Scene {
             effort: None,
             max_output_tokens: 1000,
             request_timeout: Duration::from_secs(60),
+            watch: paths.watch,
         };
         Self {
             _temporary: temporary,
@@ -507,6 +514,54 @@ fn cancellation_ends_the_process_promptly() {
     );
     let stopping = returned.saturating_duration_since(cancelled);
     assert!(stopping < Duration::from_secs(10), "{stopping:?}");
+}
+
+/// Revoking the connection's grants (Windows) or removing it (Linux) while
+/// its process runs ends the turn with `claude_code_withdrawn`, and the
+/// revocation's wait returns once the process has ended.
+fn a_withdrawn_connection_ends_its_running_turn() {
+    let scene = Scene::new();
+    let (ready, running) = std::sync::mpsc::channel::<()>();
+    let data = scene.data.clone();
+    let revoker = std::thread::spawn(move || {
+        let started = running.recv_timeout(Duration::from_secs(60)).is_ok();
+        let mut control = ControlStore::open(&data).expect("settings");
+        let (profile_id, _) = control.claude_code_setup("claude").expect("connection");
+        if cfg!(windows) {
+            control
+                .revoke_claude_code_grants("claude")
+                .expect("revoked");
+        } else {
+            let removed = control
+                .remove_provider_profile("claude", control.revision())
+                .expect("removed");
+            assert_eq!(removed.profile_id, profile_id);
+        }
+        // The turn's watcher reads the change once the settings are released.
+        drop(control);
+        let waiting = Instant::now();
+        let ended = wait_for_claude_code_turns(&data, profile_id, CLAUDE_CODE_TURN_STOP_WAIT);
+        (started, ended, waiting.elapsed())
+    });
+    let result = scene.client().complete_streaming(
+        &messages("hang"),
+        &mut |_| {
+            let _ = ready.send(());
+        },
+        &CancelToken::new(),
+    );
+    let (started, ended, waited) = revoker.join().expect("revoker");
+    assert!(started, "the fake process never streamed its ready text");
+    assert_eq!(claude_failure(result), ClaudeCodeFailure::Withdrawn);
+    ended.expect("the wait saw every process of the connection end");
+    assert!(waited < Duration::from_secs(20), "{waited:?}");
+    // A turn that starts after the change starts no process.
+    let failure = claude_failure(scene.client().complete_streaming(
+        &messages("text"),
+        &mut |_| {},
+        &CancelToken::new(),
+    ));
+    assert_eq!(failure, ClaudeCodeFailure::Withdrawn);
 }
 
 fn fake_relay(arguments: &[OsString]) -> ExitCode {

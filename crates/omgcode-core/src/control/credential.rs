@@ -940,7 +940,8 @@ pub(super) fn binding_write_uncertain(error: &ControlError) -> bool {
         | ControlError::ProviderRefused(_)
         | ControlError::Skill(_)
         | ControlError::UnknownApproval
-        | ControlError::ApprovalRefused(_) => false,
+        | ControlError::ApprovalRefused(_)
+        | ControlError::ClaudeCodeTurnsRunning => false,
     }
 }
 

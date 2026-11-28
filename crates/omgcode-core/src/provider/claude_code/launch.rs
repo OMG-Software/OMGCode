@@ -11,7 +11,7 @@
 //! tree on any surprise.
 
 use std::ffi::{OsStr, OsString};
-use std::fs;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,6 +34,8 @@ use super::stream::{
     AssistantBlock, BoundedLines, InitReport, StreamError, StreamEvent, check_lockdown,
     check_toolless_lockdown, parse_line,
 };
+use super::watch::{self, Watcher};
+use crate::control::{ClaudeCodeWatch, WatchCursor};
 use crate::prompt::ModelMessage;
 use crate::provider::{MAX_STREAM_BYTES, ModelReply, ProviderError, ReasoningEffort};
 use crate::turn::{CancelToken, ToolDefinition};
@@ -96,6 +98,9 @@ pub struct ClaudeCodeConfig {
     pub max_output_tokens: u32,
     /// How long one model request may wait for the process.
     pub request_timeout: Duration,
+    /// The settings the connection was resolved from. Each process holds
+    /// the connection's turn lock and ends when a later state withdraws it.
+    pub watch: ClaudeCodeWatch,
 }
 
 /// A validated Claude Code connection for chat, tool turns, and summaries.
@@ -220,6 +225,9 @@ impl ClaudeCodeClient {
             RenderError::TooLarge => ProviderError::RequestTooLarge,
             RenderError::Empty => ProviderError::InvalidConfiguration,
         })?;
+        // The lock and the settings check come first, so a connection the
+        // settings withdrew gets no turn folder and starts no process.
+        let (lock, cursor) = watch::hold_turn(&self.config.watch)?;
         let turn = TurnFolder::create(&self.config.runtime_folder)?;
         fs::write(turn.path.join("system.txt"), rendered.system.as_bytes())
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
@@ -236,6 +244,7 @@ impl ClaudeCodeClient {
         // The session owns every worker and the tree from here on, so an
         // early return drops it, and its `Drop` ends and joins them all.
         let mut session = Session::new(events, turn, self.config.request_timeout);
+        session.turn_lock = Some(lock);
         let mcp_config = if tools.is_empty() {
             json!({ "mcpServers": {} })
         } else {
@@ -280,7 +289,14 @@ impl ClaudeCodeClient {
                 .collect();
             config
         };
-        self.launch(&mut session, &mcp_config, rendered.input, tools, sender)?;
+        self.launch(
+            &mut session,
+            &mcp_config,
+            rendered.input,
+            tools,
+            sender,
+            cursor,
+        )?;
         Ok(session)
     }
 
@@ -293,6 +309,7 @@ impl ClaudeCodeClient {
         input: String,
         tools: &[ToolDefinition],
         sender: SyncSender<Event>,
+        cursor: WatchCursor,
     ) -> Result<(), ProviderError> {
         let turn = &session.turn;
         fs::write(turn.path.join("mcp.json"), mcp_config.to_string())
@@ -315,8 +332,10 @@ impl ClaudeCodeClient {
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
         let stdin = child.take_stdin();
         let stdout = child.take_stdout();
+        let stop = child.cancel_signal();
         // From here a failure drops the session, which ends the tree.
         session.child = Some(child);
+        session.watcher = Some(Watcher::start(self.config.watch.clone(), cursor, stop)?);
         let (Some(mut stdin), Some(stdout)) = (stdin, stdout) else {
             return Err(failure(ClaudeCodeFailure::Failed));
         };
@@ -518,6 +537,13 @@ pub(super) struct Session {
     /// Main-agent text since the last round.
     text: String,
     request_timeout: Duration,
+    /// The shared turn lock, held from before the launch until the tree and
+    /// the workers ended, so a revocation's wait sees the process gone.
+    turn_lock: Option<File>,
+    /// Ends the tree when the settings withdraw the connection.
+    watcher: Option<Watcher>,
+    /// Whether a stopped watcher had withdrawn the connection.
+    withdrawn: bool,
     /// Removed after the tree and the workers ended.
     turn: TurnFolder,
 }
@@ -548,8 +574,29 @@ impl Session {
             last_call: None,
             text: String::new(),
             request_timeout,
+            turn_lock: None,
+            watcher: None,
+            withdrawn: false,
             turn,
         }
+    }
+
+    /// Whether the settings withdrew the connection during this process.
+    fn withdrawn(&self) -> bool {
+        self.withdrawn || self.watcher.as_ref().is_some_and(Watcher::withdrawn)
+    }
+
+    /// `result`, unless the settings withdrew the connection: a withdrawn
+    /// turn fails, whatever the process did meanwhile.
+    fn unless_withdrawn<T>(
+        &mut self,
+        result: Result<T, ProviderError>,
+    ) -> Result<T, ProviderError> {
+        if self.withdrawn() {
+            self.kill();
+            return Err(failure(ClaudeCodeFailure::Withdrawn));
+        }
+        result
     }
 
     /// Text the model wrote since the last round.
@@ -576,6 +623,18 @@ impl Session {
         text: &str,
         cancel: &CancelToken,
     ) -> Result<(), ProviderError> {
+        // A withdrawn connection gets no more results.
+        let result = self.unless_withdrawn(Ok(()));
+        let result = result.and_then(|()| self.answer_call(call, text, cancel));
+        self.unless_withdrawn(result)
+    }
+
+    fn answer_call(
+        &mut self,
+        call: &PendingCall,
+        text: &str,
+        cancel: &CancelToken,
+    ) -> Result<(), ProviderError> {
         let server = self
             .server
             .as_mut()
@@ -592,8 +651,20 @@ impl Session {
         }
     }
 
-    /// Run until calls are ready or the final result arrives.
+    /// Run until calls are ready or the final result arrives. A turn the
+    /// settings withdrew fails with [`ClaudeCodeFailure::Withdrawn`], also
+    /// when calls or a result arrived meanwhile.
     pub(super) fn run(
+        &mut self,
+        cancel: &CancelToken,
+        on_text: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<Progress, ProviderError> {
+        let result = self.unless_withdrawn(Ok(()));
+        let result = result.and_then(|()| self.run_round(cancel, on_text));
+        self.unless_withdrawn(result)
+    }
+
+    fn run_round(
         &mut self,
         cancel: &CancelToken,
         mut on_text: Option<&mut dyn FnMut(&str)>,
@@ -890,8 +961,9 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// [`ClaudeCodeFailure::Failed`] when the end of the tree or of a worker
-    /// could not be confirmed.
+    /// [`ClaudeCodeFailure::Withdrawn`] when the settings withdrew the
+    /// connection before the process ended, and [`ClaudeCodeFailure::Failed`]
+    /// when the end of the tree or of a worker could not be confirmed.
     pub(super) fn finish(&mut self) -> Result<(), ProviderError> {
         self.close_channel();
         let ended = self
@@ -899,7 +971,10 @@ impl Session {
             .take()
             .is_none_or(|child| child.finish(EXIT_GRACE).is_ok());
         let joined = self.stop_workers();
-        if ended && joined {
+        self.release_turn();
+        if self.withdrawn {
+            Err(failure(ClaudeCodeFailure::Withdrawn))
+        } else if ended && joined {
             Ok(())
         } else {
             Err(failure(ClaudeCodeFailure::Failed))
@@ -915,9 +990,22 @@ impl Session {
         }
         self.close_channel();
         if let Some(child) = self.child.take() {
+            // An unconfirmed end has already dropped the tree, whose own
+            // fallback termination ran before this returns.
             let _ = child.finish(Duration::ZERO);
         }
         let _ = self.stop_workers();
+        self.release_turn();
+    }
+
+    /// Stop the watcher and release the turn lock. Called only once the tree
+    /// was finished, so a revocation waiting for the lock sees it ended.
+    fn release_turn(&mut self) {
+        if let Some(mut watcher) = self.watcher.take() {
+            watcher.stop();
+            self.withdrawn |= watcher.withdrawn();
+        }
+        self.turn_lock = None;
     }
 
     fn close_channel(&mut self) {

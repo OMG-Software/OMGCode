@@ -924,11 +924,16 @@ and a tool turn keeps that process for all its rounds.
   folder. Each grant is recorded before and after its ACL change, with the
   same grant reserve as workspace grants. `omgcode workspace
   claude-code-revoke <name>` revokes them all and deletes the container
-  profile; it needs no revision. A profile with grants cannot be removed,
-  and a turn refuses to start until every role holds an active grant for
-  the folder it names. A folder that holds the development root, a
-  workspace, or application storage, or is a drive root or the home folder
-  or its ancestor, is refused.
+  profile; it needs no revision, refuses a profile of another kind, and also
+  deletes a container profile that an interrupted revocation left. A grant
+  checks its whole plan before it records the first intent. A profile with
+  grants cannot be removed, and a turn refuses to start until every role
+  holds an active grant for the folder it names. A folder that holds the
+  development root, a workspace, or application storage, or is a drive root
+  or the home folder or its ancestor, is refused. The sign-in folder must
+  also stay apart from every workspace container grant and every other
+  connection's sign-in folder, and a new development root or workspace
+  container grant may not overlap it.
 - **Linux.** Landlock allows reading the program and relay folders, the
   per-turn folder, `/usr`, `/lib`, `/lib64`, `/bin`, the network support
   files, and `/dev/zero`, `/dev/random`, and `/dev/urandom`, and writing the
@@ -940,12 +945,30 @@ and a tool turn keeps that process for all its rounds.
   and no disk-growth limit. On Linux the CLI must run in a delegated cgroup
   v2, as for `run`. Cancellation, a lockdown failure, and every other
   failure end the whole tree, and the end is observed before the turn
-  returns.
+  returns. A failed termination or emptiness check counts as unconfirmed
+  cleanup, so the tree's own fallback kill still runs.
+- **Withdrawal.** Each process holds a shared lock on
+  `claude-code/<profile id>.turns` in application storage, outside every
+  grant, from before its per-turn folder is made until its tree was
+  observed ended. Before the launch the turn checks every settings state
+  recorded since it resolved the connection, and while the process runs a
+  watcher checks each later state every 100 ms. A state that removes the
+  connection or, on Windows, leaves a role without an active grant ends the
+  tree, and the turn fails with `claude_code_withdrawn`; unreadable settings
+  do the same. `workspace claude-code-revoke`, `workspace
+  provider-profile-remove`, and the `settings` window's removal record the
+  change, release the settings, and wait up to 30 seconds for an exclusive
+  lock. A turn that does not end in time fails the command with a `control`
+  error that says the change is recorded.
 - **Standard streams.** Standard input carries the rendered conversation
   and is then closed. Standard output is read as bounded stream-json lines;
   nothing it says is trusted. The tool channel is a named pipe (Windows) or a
   socket in a `0700` per-turn folder (Linux) that the relay reaches after a
-  per-turn nonce, not an inherited handle. The Linux folder has a random
+  per-turn nonce, not an inherited handle. At most eight output events wait
+  for the turn, so a turn that is running a call or waiting for an approval
+  holds back the process's output. Each write to the relay ends at the
+  request timeout or on cancellation, and the main agent's text has an
+  8 MiB budget. The Linux folder has a random
   name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
   that is unset, relative, or too long, because a socket path must fit in
   107 bytes and one beneath application storage does not.

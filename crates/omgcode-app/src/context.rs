@@ -239,6 +239,7 @@ mod tests {
             ClaudeCodeFailure::Lockdown,
             ClaudeCodeFailure::Protocol,
             ClaudeCodeFailure::Failed,
+            ClaudeCodeFailure::Withdrawn,
         ] {
             let error = compaction_error(
                 ContextError::Provider(ProviderError::ClaudeCode(failure)),

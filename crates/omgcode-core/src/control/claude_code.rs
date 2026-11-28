@@ -244,10 +244,17 @@ impl ClaudeCodeGrantStatus {
 /// The result of revoking a connection's grants.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ClaudeCodeRevocation {
+    /// The connection whose grants were revoked.
+    pub profile_id: Uuid,
     /// How many grants were revoked.
     pub revoked: usize,
     /// Whether the container profile was deleted after the last grant.
     pub profile_deleted: bool,
+    /// Whether the revocation withdrew the connection's running turns, so the
+    /// caller waits for them with [`wait_for_claude_code_turns`] once the
+    /// settings are released. Grants, and so revocations, exist only on
+    /// Windows.
+    pub turns_withdrawn: bool,
 }
 
 /// The AppContainer name for one Claude Code connection:
@@ -566,8 +573,10 @@ impl ControlStore {
             false
         };
         Ok(ClaudeCodeRevocation {
+            profile_id,
             revoked,
             profile_deleted,
+            turns_withdrawn: platform_grants_supported(),
         })
     }
 
@@ -604,8 +613,10 @@ impl ControlStore {
         let relay_folder = relay_program.parent().ok_or(ControlError::GrantRefused(
             "the relay program has no folder",
         ))?;
-        let runtime_folder =
-            claude_code_runtime_folder(&self.data_directory.live_path()?, profile_id);
+        let data_root = self.data_directory.live_path()?;
+        let runtime_folder = claude_code_runtime_folder(&data_root, profile_id);
+        // Taken under the settings lock, so the watcher sees every later change.
+        let watch = ClaudeCodeWatch::new(data_root, profile_id, self.event_count());
         let container = if platform_grants_supported() {
             const MISSING: ControlError = ControlError::GrantRefused(
                 "the Claude Code connection's container lacks an active grant for one of its folders; run `workspace claude-code-grant` first",
@@ -652,6 +663,7 @@ impl ControlStore {
             runtime_folder,
             relay_program,
             container,
+            watch,
         })
     }
 
@@ -792,6 +804,9 @@ pub struct ClaudeCodePaths {
     pub relay_program: PathBuf,
     /// The connection's AppContainer, on Windows.
     pub container: Option<ContainerName>,
+    /// The settings the turn was resolved from, which its process's watcher
+    /// rechecks.
+    pub watch: ClaudeCodeWatch,
 }
 
 const fn platform_grants_supported() -> bool {
@@ -966,6 +981,11 @@ fn transition(
     status.state = next(status.state).ok_or(ControlError::Invalid("invalid grant transition"))?;
     Ok(())
 }
+
+mod turns;
+
+pub use turns::{CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeWatch, wait_for_claude_code_turns};
+pub(crate) use turns::{Recheck, WatchCursor};
 
 #[cfg(test)]
 mod tests;

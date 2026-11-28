@@ -46,10 +46,11 @@ pub use assignment::{
     RegisteredWorkspace, Revocations, SkippedGrant, Unregistration,
 };
 pub use claude_code::{
-    ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole, ClaudeCodeGrantStatus,
-    ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeSetup, claude_code_container,
-    claude_code_runtime_folder,
+    CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole,
+    ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeSetup, ClaudeCodeWatch,
+    claude_code_container, claude_code_runtime_folder, wait_for_claude_code_turns,
 };
+pub(crate) use claude_code::{Recheck, WatchCursor};
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
     ContainerRevocation, RootGrantNeed, container_name, root_grant_need,
@@ -196,6 +197,13 @@ pub enum ControlError {
     /// The approval request, decision, or consumption is not valid.
     #[error("approval refused: {0}")]
     ApprovalRefused(&'static str),
+    /// A change that withdrew a Claude Code connection is recorded, but a
+    /// running turn of the connection did not end within the wait.
+    #[error(
+        "the change is recorded, but a running Claude Code turn of this connection did not end within {} seconds; end that `omgcode` command, then check that no `claude` process of the connection remains",
+        CLAUDE_CODE_TURN_STOP_WAIT.as_secs()
+    )]
+    ClaudeCodeTurnsRunning,
 }
 
 impl From<StorageError> for ControlError {

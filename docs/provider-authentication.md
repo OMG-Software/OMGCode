@@ -623,7 +623,9 @@ Anthropic approval, and the Claude subscription requirement stays open.
 
 - **Setup.** The operator signs `claude` in with `claude auth login`, with
   `CLAUDE_CONFIG_DIR` set to a folder kept for this connection alone,
-  outside application storage, the development root, and every workspace.
+  outside application storage, the development root, every workspace,
+  every workspace container grant, and every other connection's sign-in
+  folder.
   `workspace claude-code-add --name NAME --program PATH --config-folder
   PATH --revision N` records the canonical program and the folder's
   identity; the generic `provider-profile-add` refuses the kind, which
@@ -634,7 +636,9 @@ Anthropic approval, and the Claude subscription requirement stays open.
   relay), and on the connection's runtime folder in application storage,
   and read-write on the sign-in folder. `workspace claude-code-revoke NAME`
   revokes every grant and deletes the container profile; a profile with
-  grants cannot be removed.
+  grants cannot be removed. Revoking, and removing the connection with
+  `provider-profile-remove` or the `settings` window, ends its running turns
+  and waits up to 30 seconds for their processes to end.
 - **Use.** `chat --provider-profile NAME` and `session compact
   --provider-profile NAME` resolve the connection. Every turn re-checks the
   recorded folder identities and, on Windows, each grant. Every other route,
@@ -655,11 +659,13 @@ Anthropic approval, and the Claude subscription requirement stays open.
 - **Failures.** A run that the CLI reports as not signed in fails with
   `claude_code_not_signed_in`, which tells the operator to run `claude auth
   login` with `CLAUDE_CONFIG_DIR` set to the connection's sign-in folder.
-  The other failures are `claude_code_protocol` and `claude_code_failed`.
+  The other failures are `claude_code_protocol`, `claude_code_failed`, and
+  `claude_code_withdrawn`, which means the settings revoked a grant of the
+  connection or removed it while the turn ran.
 - **Verified.** A fake `claude` drives the whole path in the tests: on
   Windows inside the connection's real AppContainer with real grants,
-  through the CLI commands, a tool turn, a streamed resumed turn, and
-  compaction. The same tests passed on Linux under WSL 2 (Ubuntu 24.04) in
+  through the CLI commands, a tool turn, a streamed resumed turn, a
+  revocation during a running turn, and compaction. The same tests passed on Linux under WSL 2 (Ubuntu 24.04) in
   a delegated cgroup. Claude Code 2.1.325's flags, init report, MCP
   handshake, and sign-in failure were observed directly on Windows ([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
 - **Not verified.** No signed-in turn of the real `claude` ran on either

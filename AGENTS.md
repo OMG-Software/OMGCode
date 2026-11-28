@@ -155,8 +155,9 @@ AppContainer with grants recorded by `workspace claude-code-grant`; its
 environment is built from nothing; its built-in tools, settings, plugins,
 and skills are switched off and its init report is checked; and OMGCode's
 tools reach it only through a relayed MCP stdio server over a per-turn pipe,
-through the same runtime checks. It is personal use, not evidence of
-Anthropic approval, and was tested with a fake `claude` only
+through the same runtime checks. Revoking its grants or removing it ends
+its running turns before the command reports success. It is personal use,
+not evidence of Anthropic approval, and was tested with a fake `claude` only
 ([ADR-0109](docs/adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
 No native provider API or other login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the

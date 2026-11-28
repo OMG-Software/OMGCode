@@ -682,6 +682,7 @@ fn compact_session(
             effort: None,
             max_output_tokens: summary_tokens,
             request_timeout: COMPACTION_REQUEST_TIMEOUT,
+            watch: paths.watch,
         })
         .map_err(provider_error)?
         .into(),

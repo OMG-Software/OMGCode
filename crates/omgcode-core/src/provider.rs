@@ -1363,7 +1363,9 @@ pub(crate) const fn model_error(error: ProviderError) -> ModelError {
         | ProviderError::SignInRequired
         | ProviderError::AccessTokenUnavailable
         | ProviderError::ClaudeCode(
-            claude_code::ClaudeCodeFailure::NotSignedIn | claude_code::ClaudeCodeFailure::Failed,
+            claude_code::ClaudeCodeFailure::NotSignedIn
+            | claude_code::ClaudeCodeFailure::Failed
+            | claude_code::ClaudeCodeFailure::Withdrawn,
         ) => ModelError::Transport,
         ProviderError::Cancelled => ModelError::Cancelled,
         ProviderError::ClaudeCode(

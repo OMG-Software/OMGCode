@@ -262,6 +262,7 @@ impl ChatClients {
             effort: settings.reasoning_effort,
             max_output_tokens: settings.max_output_tokens,
             request_timeout: Duration::from_secs(settings.turn_timeout_seconds),
+            watch: paths.watch,
         })
         .map_err(AppError::provider)?;
         let summary = chat.for_summaries(summary_output_tokens(settings.context_tokens));
