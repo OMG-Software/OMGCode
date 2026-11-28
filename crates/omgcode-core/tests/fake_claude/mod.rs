@@ -137,9 +137,12 @@ impl McpClient {
     /// this fake's writes block. The writer names the request it is writing
     /// for as long as that write has not returned, so the stall is marked in
     /// `folder` only when one write was still in progress for
-    /// [`STALL_QUIET`]: a writer that is not running names none, and a
-    /// writer whose write failed is marked as failed instead. The fake then
-    /// waits to be ended.
+    /// [`STALL_QUIET`], and a writer whose write failed is marked as failed
+    /// instead. The writer names a request just before its write starts, so
+    /// the marker is evidence of the stall, not proof: on Linux the process
+    /// tests also see OMGCode's reply write asleep in its system call, and
+    /// the launch tests prove a blocked write's release with a controlled
+    /// writer. The fake then waits to be ended.
     fn flood(&mut self, folder: &Path) {
         // The request whose write is in progress, or 0 between writes.
         let writing = AtomicU64::new(0);
@@ -368,7 +371,8 @@ pub fn diagnosis(sign_in: &Path) -> String {
     }
 }
 
-/// Whether a flood's writes stopped because the relay stopped reading.
+/// Whether a flood marked its stall: one of its writes stayed in progress
+/// for [`STALL_QUIET`], the evidence that the relay stopped reading.
 #[allow(dead_code, reason = "only the core process tests flood the relay")]
 pub fn stalled(sign_in: &Path) -> bool {
     sign_in.join(STALLED_FILE).is_file()

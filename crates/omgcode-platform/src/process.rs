@@ -351,7 +351,12 @@ pub struct UnconfirmedCleanup {
 }
 
 impl UnconfirmedCleanup {
-    fn new(reason: &'static str) -> Self {
+    /// A report that a tree was not observed empty, for `reason`, with no
+    /// failed native call. It is only a report: callers that drive a tree
+    /// through another layer use it to exercise their handling of this
+    /// outcome.
+    #[must_use]
+    pub fn new(reason: &'static str) -> Self {
         Self {
             reason,
             cause: None,

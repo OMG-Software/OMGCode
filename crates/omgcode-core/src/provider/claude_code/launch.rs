@@ -226,36 +226,28 @@ impl ClaudeCodeClient {
             RenderError::TooLarge => ProviderError::RequestTooLarge,
             RenderError::Empty => ProviderError::InvalidConfiguration,
         })?;
-        // The lock and the settings check come first, so a connection the
-        // settings withdrew gets no turn folder and starts no process.
-        let (lock, cursor) = watch::hold_turn(&self.config.watch)?;
-        let turn = TurnFolder::create(&self.config.runtime_folder)?;
-        fs::write(turn.path.join("system.txt"), rendered.system.as_bytes())
-            .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
-        let settings = json!({
-            "enabledPlugins": BUILTIN_PLUGINS
-                .iter()
-                .map(|plugin| ((*plugin).to_owned(), json!(false)))
-                .collect::<serde_json::Map<_, _>>(),
-        });
-        fs::write(turn.path.join("settings.json"), settings.to_string())
-            .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
+        // The lock, the turn's record, and the settings check come first, so
+        // a connection the settings withdrew gets no turn folder and starts
+        // no process. The record, written under the lock and before any
+        // process starts, outlives an OMGCode process that exits or fails
+        // before the tree was observed ended.
+        let held = watch::hold_turn(&self.config.watch)?;
+        let turn = match self.prepare_turn_folder(&rendered.system) {
+            Ok(turn) => turn,
+            Err(error) => {
+                watch::release_unstarted(held.lock, held.record);
+                return Err(error);
+            }
+        };
 
         let (sender, events) = mpsc::sync_channel(EVENT_QUEUE);
         // The session owns every worker and the tree from here on, so an
         // early return drops it, and its `Drop` ends and joins them all.
         let mut session = Session::new(events, turn, self.config.request_timeout);
-        session.turn_lock = Some(lock);
+        session.turn_lock = Some(held.lock);
+        session.turn_record = Some(held.record);
         session.turn_watch = Some(self.config.watch.clone());
-        // Written under the lock and before any process starts, so an
-        // OMGCode process that exits or fails before the tree was observed
-        // ended leaves it behind.
-        session.turn_record = Some(
-            self.config
-                .watch
-                .record_turn()
-                .map_err(|_| failure(ClaudeCodeFailure::Failed))?,
-        );
+        let cursor = held.cursor;
         let mcp_config = if tools.is_empty() {
             json!({ "mcpServers": {} })
         } else {
@@ -311,6 +303,23 @@ impl ClaudeCodeClient {
         Ok(session)
     }
 
+    /// Make the turn's folder with its system prompt and its settings, which
+    /// switch every built-in plugin off.
+    fn prepare_turn_folder(&self, system: &str) -> Result<TurnFolder, ProviderError> {
+        let turn = TurnFolder::create(&self.config.runtime_folder)?;
+        fs::write(turn.path.join("system.txt"), system.as_bytes())
+            .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
+        let settings = json!({
+            "enabledPlugins": BUILTIN_PLUGINS
+                .iter()
+                .map(|plugin| ((*plugin).to_owned(), json!(false)))
+                .collect::<serde_json::Map<_, _>>(),
+        });
+        fs::write(turn.path.join("settings.json"), settings.to_string())
+            .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
+        Ok(turn)
+    }
+
     /// Write the MCP configuration, start the process, and start the threads
     /// that feed its input and read its output, all owned by `session`.
     fn launch(
@@ -339,16 +348,10 @@ impl ClaudeCodeClient {
                 max_disk_bytes: None,
             }),
         };
-        let mut child = match platform::spawn_confined_streaming(&spec, &confinement, &limits) {
-            Ok(child) => child,
-            Err(error) => {
-                // A tree that started and could not be stopped is no child
-                // of the session, so the session records its end as
-                // unconfirmed itself.
-                session.unconfirmed |= matches!(error, ProcessError::CleanupUnconfirmed(_));
-                return Err(failure(ClaudeCodeFailure::Failed));
-            }
-        };
+        let mut child = spawned(
+            session,
+            platform::spawn_confined_streaming(&spec, &confinement, &limits),
+        )?;
         let stdin = child.take_stdin();
         let stdout = child.take_stdout();
         let stop = child.cancel_signal();
@@ -1107,6 +1110,7 @@ impl Session {
                     tree.cancel();
                 }
             },
+            || {},
         )
     }
 
@@ -1302,14 +1306,30 @@ fn hold_until_ended(lock: File, workers: Vec<JoinHandle<()>>) {
     }
 }
 
+/// The child a launch started, or the turn's failure. A tree that started
+/// and could not be stopped is no child of the session, so the session
+/// records its end as unconfirmed itself: it then keeps the turn's lock
+/// until this process exits and its record after that.
+fn spawned(
+    session: &mut Session,
+    started: Result<StreamingChild, ProcessError>,
+) -> Result<StreamingChild, ProviderError> {
+    started.map_err(|error| {
+        session.unconfirmed |= matches!(error, ProcessError::CleanupUnconfirmed(_));
+        failure(ClaudeCodeFailure::Failed)
+    })
+}
+
 /// Run `write` on this thread while a watcher calls `stop`, once, when
 /// `cancel` is set or `expired` turns `true` before the write is recorded
 /// finished. The write is recorded finished after `write` returns, so one
 /// whose bytes went out but that is recorded only after the stop still fails.
 /// A write already cancelled or expired never starts, and the writer checks
-/// both again before it records the write finished, so a watcher that has
-/// not run yet cannot let an overdue write succeed. Every write refused for
-/// either reason calls `stop` before this returns.
+/// both again after it recorded the write finished, so neither a watcher
+/// that has not run yet nor a writer delayed before its record can let an
+/// overdue write succeed. Every write refused for either reason calls `stop`
+/// before this returns. `recording` runs just before the record; tests use
+/// it to pass a deadline there, and every other caller passes nothing.
 ///
 /// # Errors
 ///
@@ -1322,6 +1342,7 @@ fn raced_write(
     cancel: &CancelToken,
     expired: impl Fn() -> bool + Sync,
     stop: impl Fn() + Sync,
+    recording: impl FnOnce(),
 ) -> Result<(), ProviderError> {
     let refused = || {
         if cancel.is_cancelled() {
@@ -1355,13 +1376,17 @@ fn raced_write(
             return Err(failure(ClaudeCodeFailure::Failed));
         };
         let written = write();
-        let finished = if cancel.is_cancelled() || expired() {
-            if race.stop() {
+        recording();
+        // Recorded first and checked after: once recorded, the watcher can
+        // no longer stop the write, so a cancellation or a deadline that came
+        // at any point before the record, also one the watcher never saw,
+        // fails the write here.
+        let finished = race.finish() && {
+            let late = cancel.is_cancelled() || expired();
+            if late {
                 stop();
             }
-            false
-        } else {
-            race.finish()
+            !late
         };
         watcher.thread().unpark();
         Ok((written, finished))

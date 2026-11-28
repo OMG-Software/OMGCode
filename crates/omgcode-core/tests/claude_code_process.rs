@@ -706,12 +706,25 @@ struct FloodEnd {
     /// Whether the exit probe saw the fake and its relay running while the
     /// write stalled.
     seen_running: bool,
+    /// On Linux, whether the turn's thread was seen asleep in its reply
+    /// write to the relay; `None` where no such probe exists.
+    seen_blocked: Option<bool>,
+    /// When the turn was cancelled, for a flood asked to cancel it.
+    cancelled_at: Option<Instant>,
 }
 
 /// Run a turn whose fake floods the relay with requests and reads none of
 /// the replies, so OMGCode's write of a reply blocks. The turn runs on its
-/// own thread, so one that never ends fails the test after `limit`.
-fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
+/// own thread, so one that never ends fails the test after `limit`. With
+/// `cancel_once_blocked`, the turn is cancelled once the fake marked the
+/// stall, both processes were seen running, and, on Linux, the turn's
+/// thread was seen asleep in its reply write.
+fn flood_turn(
+    scene: &Scene,
+    cancel: CancelToken,
+    limit: Duration,
+    cancel_once_blocked: bool,
+) -> FloodEnd {
     let stop = cancel.clone();
     let client = scene.client();
     let (data, workspace, workspace_id) = (
@@ -719,8 +732,12 @@ fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
         scene.workspace.clone(),
         scene.workspace_id,
     );
+    let (thread_sender, thread_id) = std::sync::mpsc::channel();
     let started = Instant::now();
     let turn = std::thread::spawn(move || {
+        // The reply write runs on this thread, so its system call is this
+        // thread's. A closed channel only means the test stopped waiting.
+        let _ = thread_sender.send(this_thread_id());
         let mut model = ClaudeCodeModel::new(&client);
         let mut journal =
             SessionJournal::create_with_workspace_id(&data, &workspace, "Claude", workspace_id)
@@ -735,15 +752,39 @@ fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
             model.last_error(),
         )
     });
+    let turn_thread = thread_id
+        .recv_timeout(Duration::from_secs(30))
+        .ok()
+        .flatten();
     let mut seen_running = false;
+    let mut seen_blocked = turn_thread.as_ref().map(|_| false);
+    let mut cancelled_at = None;
     while !turn.is_finished() {
         if started.elapsed() >= limit {
             abandon(turn, &stop, &scene.sign_in, limit);
         }
+        let stalled = fake_claude::stalled(&scene.sign_in);
         // While the reply write stalls, both processes run, so the exit
         // probe used after the turn must see them running here.
-        if !seen_running && fake_claude::stalled(&scene.sign_in) {
+        if stalled && !seen_running {
             seen_running = fake_claude::processes_running(&scene.sign_in);
+        }
+        if let Some(thread) = &turn_thread
+            && seen_blocked == Some(false)
+            && asleep_in_socket_write(thread)
+        {
+            seen_blocked = Some(true);
+        }
+        if cancel_once_blocked
+            && cancelled_at.is_none()
+            && stalled
+            && seen_running
+            && seen_blocked != Some(false)
+        {
+            // Taken first, so a delay after the request counts against the
+            // turn.
+            cancelled_at = Some(Instant::now());
+            stop.cancel();
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -754,7 +795,56 @@ fn flood_turn(scene: &Scene, cancel: CancelToken, limit: Duration) -> FloodEnd {
         error,
         took,
         seen_running,
+        seen_blocked,
+        cancelled_at,
     }
+}
+
+/// This thread's identifier, which `/proc` names its system calls by.
+#[cfg(target_os = "linux")]
+fn this_thread_id() -> Option<String> {
+    let link = fs::read_link("/proc/thread-self").ok()?;
+    link.file_name()?.to_str().map(str::to_owned)
+}
+
+/// No system call probe exists here.
+#[cfg(not(target_os = "linux"))]
+fn this_thread_id() -> Option<String> {
+    None
+}
+
+/// Whether the thread `thread` of this process is asleep in a write to a
+/// socket. `/proc` names the system call a sleeping thread is in and its
+/// first argument, the descriptor, so this is OMGCode's reply write to the
+/// relay when `thread` runs the turn, whose only socket write that is.
+#[cfg(target_os = "linux")]
+fn asleep_in_socket_write(thread: &str) -> bool {
+    let Ok(text) = fs::read_to_string(format!("/proc/self/task/{thread}/syscall")) else {
+        return false;
+    };
+    let mut fields = text.split_whitespace();
+    let (Some(number), Some(first)) = (fields.next(), fields.next()) else {
+        return false;
+    };
+    let write_family = [
+        libc::SYS_write,
+        libc::SYS_writev,
+        libc::SYS_sendto,
+        libc::SYS_sendmsg,
+    ];
+    number
+        .parse::<libc::c_long>()
+        .is_ok_and(|number| write_family.contains(&number))
+        && u64::from_str_radix(first.trim_start_matches("0x"), 16).is_ok_and(|descriptor| {
+            fs::read_link(format!("/proc/self/fd/{descriptor}"))
+                .is_ok_and(|target| target.to_string_lossy().starts_with("socket:"))
+        })
+}
+
+/// Never called where [`this_thread_id`] names no thread.
+#[cfg(not(target_os = "linux"))]
+fn asleep_in_socket_write(_thread: &str) -> bool {
+    false
 }
 
 /// How long a turn that overran its limit has, once cancelled, to end.
@@ -793,18 +883,23 @@ const EXIT_PROBE: Duration = Duration::from_secs(10);
 
 /// A reply write that the relay never reads ends at the request timeout:
 /// the turn fails with `claude_code_failed` instead of waiting for the
-/// relay.
+/// relay. On Linux the turn's thread is seen asleep in that write first;
+/// elsewhere the fake's stall marker is the only evidence of it, and the
+/// launch tests prove a blocked write's release with a controlled writer.
 fn a_reply_the_relay_does_not_read_ends_at_the_request_timeout() {
     let mut scene = Scene::new();
     let timeout = Duration::from_secs(15);
     scene.config.request_timeout = timeout;
-    let end = flood_turn(&scene, CancelToken::new(), Duration::from_secs(120));
-    // The stall, marked before the deadline, shows the write was blocked
-    // when the deadline passed.
+    let end = flood_turn(&scene, CancelToken::new(), Duration::from_secs(120), false);
     assert!(
         fake_claude::stalled(&scene.sign_in),
         "{}",
         fake_claude::diagnosis(&scene.sign_in)
+    );
+    assert_ne!(
+        end.seen_blocked,
+        Some(false),
+        "the reply write was never seen asleep"
     );
     assert!(!end.cancelled);
     assert_eq!(
@@ -822,30 +917,29 @@ fn a_reply_the_relay_does_not_read_ends_at_the_request_timeout() {
 }
 
 /// A reply write that the relay never reads ends promptly when the turn is
-/// cancelled, which happens only once the write is blocked.
+/// cancelled, which happens only once the write is blocked: on Linux once
+/// the turn's thread is seen asleep in it, elsewhere once the fake marked
+/// the stall.
 fn a_reply_the_relay_does_not_read_ends_on_cancellation() {
     let scene = Scene::new();
-    let cancel = CancelToken::new();
-    let trigger = cancel.clone();
-    let sign_in = scene.sign_in.clone();
-    let canceller = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !fake_claude::stalled(&sign_in) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let stalled = fake_claude::stalled(&sign_in);
-        // Probed here, before the cancellation ends both processes.
-        let running = fake_claude::processes_running(&sign_in);
-        // Taken first, so a delay after the request counts against the turn.
-        let cancelled = Instant::now();
-        trigger.cancel();
-        (stalled, running, cancelled)
-    });
-    let end = flood_turn(&scene, cancel, Duration::from_secs(120));
+    let end = flood_turn(&scene, CancelToken::new(), Duration::from_secs(120), true);
     let returned = Instant::now();
-    let (stalled, running, cancelled_at) = canceller.join().expect("canceller");
-    assert!(stalled, "{}", fake_claude::diagnosis(&scene.sign_in));
-    assert!(running, "{}", fake_claude::diagnosis(&scene.sign_in));
+    let Some(cancelled_at) = end.cancelled_at else {
+        panic!(
+            "never cancelled; {}",
+            fake_claude::diagnosis(&scene.sign_in)
+        );
+    };
+    assert!(
+        end.seen_running,
+        "{}",
+        fake_claude::diagnosis(&scene.sign_in)
+    );
+    assert_ne!(
+        end.seen_blocked,
+        Some(false),
+        "the reply write was never seen asleep"
+    );
     assert!(end.cancelled, "{:?}", end.error);
     let stopping = returned.saturating_duration_since(cancelled_at);
     assert!(stopping < Duration::from_secs(10), "{stopping:?}");

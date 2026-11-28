@@ -18,31 +18,70 @@ use omgcode_platform::process::CancelSignal;
 
 use super::ClaudeCodeFailure;
 use super::launch::failure;
-use crate::control::{ClaudeCodeWatch, Recheck, WatchCursor};
+use crate::control::{ClaudeCodeWatch, Recheck, TurnRecord, WatchCursor};
 use crate::provider::ProviderError;
 
 /// How often the watcher checks whether the settings changed.
 const WATCH_POLL: Duration = Duration::from_millis(100);
 
-/// Take the connection's shared turn lock, then check every settings state
-/// recorded since `watch` was resolved. The lock is taken first, so a change
-/// recorded before a revocation's wait found the lock free is seen here.
+/// A turn allowed to start: the connection's shared turn lock, the turn's
+/// record, and where its watcher goes on checking the settings.
+pub(super) struct HeldTurn {
+    pub(super) lock: File,
+    pub(super) record: TurnRecord,
+    pub(super) cursor: WatchCursor,
+}
+
+/// Take the connection's shared turn lock, write the turn's record, and
+/// then check every settings state recorded since `watch` was resolved. The
+/// lock is taken first, so a change recorded before a revocation's wait
+/// found the lock free is seen here. The record is written before the check,
+/// so a removal that the check misses already finds the record reserving
+/// the sign-in folder; one recorded earlier is seen by the check.
 ///
 /// # Errors
 ///
 /// [`ClaudeCodeFailure::Withdrawn`] when a revocation holds the lock or a
 /// state withdrew the connection, and [`ClaudeCodeFailure::Failed`] when the
-/// lock file cannot be used.
-pub(super) fn hold_turn(watch: &ClaudeCodeWatch) -> Result<(File, WatchCursor), ProviderError> {
+/// lock file cannot be used or the record cannot be written.
+pub(super) fn hold_turn(watch: &ClaudeCodeWatch) -> Result<HeldTurn, ProviderError> {
+    hold_turn_observed(watch, || {})
+}
+
+/// As [`hold_turn`], running `recorded` between the record and the check.
+fn hold_turn_observed(
+    watch: &ClaudeCodeWatch,
+    recorded: impl FnOnce(),
+) -> Result<HeldTurn, ProviderError> {
     let lock = watch
         .lock_turn()
         .map_err(|_| failure(ClaudeCodeFailure::Failed))?
         .ok_or(failure(ClaudeCodeFailure::Withdrawn))?;
+    let record = watch
+        .record_turn()
+        .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
+    recorded();
     let mut cursor = watch.cursor();
     match watch.recheck_waiting(&mut cursor) {
-        Recheck::Allowed => Ok((lock, cursor)),
-        Recheck::Busy | Recheck::Withdrawn(_) => Err(failure(ClaudeCodeFailure::Withdrawn)),
+        Recheck::Allowed => Ok(HeldTurn {
+            lock,
+            record,
+            cursor,
+        }),
+        Recheck::Busy | Recheck::Withdrawn(_) => {
+            release_unstarted(lock, record);
+            Err(failure(ClaudeCodeFailure::Withdrawn))
+        }
     }
+}
+
+/// End the hold of a turn that started no process: its record goes first,
+/// then the lock, so a revocation that takes the lock finds no record. A
+/// record that cannot be removed stays and fails every later wait until it
+/// is acknowledged, which is the safe side of a turn that never ran.
+pub(super) fn release_unstarted(lock: File, record: TurnRecord) {
+    let _kept_if_failed = record.clear();
+    drop(lock);
 }
 
 /// The thread that ends a process tree once the settings withdraw it.
@@ -141,25 +180,27 @@ impl Drop for Watcher {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
     use std::time::Duration;
 
     use omgcode_platform::process::CancelSignal;
 
-    use super::Watcher;
-    use crate::control::{ClaudeCodeDeclaration, ControlStore};
+    use super::{ClaudeCodeFailure, Watcher, hold_turn_observed};
+    use crate::control::{
+        ClaudeCodeDeclaration, ClaudeCodeWatch, ControlError, ControlStore,
+        acknowledge_claude_code_cleanup,
+    };
+    use crate::provider::ProviderError;
 
-    /// A withdrawal recorded after the watcher's last poll, which the loop
-    /// never checks because the watcher stops first, is still seen by the
-    /// check at the stop: the turn is withdrawn and its tree stopped.
-    #[test]
-    fn a_withdrawal_recorded_after_the_last_poll_is_seen_at_the_stop() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let data = directory.path().join("data");
-        let root = directory.path().join("projects");
-        let tools = directory.path().join("tools");
-        let sign_in = directory.path().join("sign-in");
-        let relay = directory.path().join("relay");
+    /// A recorded, and on Windows granted, connection named `claude` in
+    /// `directory`: its data root, program, sign-in folder, and watch.
+    fn scene(directory: &Path) -> (PathBuf, PathBuf, PathBuf, ClaudeCodeWatch) {
+        let data = directory.join("data");
+        let root = directory.join("projects");
+        let tools = directory.join("tools");
+        let sign_in = directory.join("sign-in");
+        let relay = directory.join("relay");
         for path in [&root, &tools, &sign_in, &relay] {
             fs::create_dir(path).expect("scene folder");
         }
@@ -183,8 +224,8 @@ mod tests {
             .add_claude_code_profile(
                 &ClaudeCodeDeclaration {
                     name: "claude".into(),
-                    program,
-                    config_folder: sign_in,
+                    program: program.clone(),
+                    config_folder: sign_in.clone(),
                 },
                 store.revision(),
             )
@@ -198,7 +239,29 @@ mod tests {
             .resolve_claude_code("claude", &relay_program)
             .expect("resolved")
             .watch;
-        drop(store);
+        (data, program, sign_in, watch)
+    }
+
+    /// Withdraw the connection: on Windows by revoking its grants and then
+    /// removing it, elsewhere by removing it.
+    fn withdraw(data: &Path) {
+        let mut store = ControlStore::open(data).expect("store");
+        if cfg!(windows) {
+            let revoked = store.revoke_claude_code_grants("claude").expect("revoked");
+            assert!(revoked.profile_deleted);
+        }
+        let _removed = store
+            .remove_provider_profile("claude", store.revision())
+            .expect("removed");
+    }
+
+    /// A withdrawal recorded after the watcher's last poll, which the loop
+    /// never checks because the watcher stops first, is still seen by the
+    /// check at the stop: the turn is withdrawn and its tree stopped.
+    #[test]
+    fn a_withdrawal_recorded_after_the_last_poll_is_seen_at_the_stop() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, _program, _sign_in, watch) = scene(directory.path());
 
         let tree = CancelSignal::new();
         let (polled, polls) = mpsc::channel();
@@ -232,5 +295,49 @@ mod tests {
         watcher.stop();
         assert!(watcher.withdrawn(), "the change after the last poll");
         assert!(tree.is_cancelled(), "the tree is stopped");
+    }
+
+    /// A removal recorded after the turn wrote its record and before its
+    /// settings check: the record already reserves the sign-in folder, so a
+    /// new connection cannot take it while the turn may still start, and the
+    /// check then withdraws the turn, which leaves no record and frees the
+    /// lock. With the check before the record, the new connection would take
+    /// the folder before any record existed.
+    #[test]
+    fn a_removal_between_the_turn_record_and_its_check_never_frees_the_folder() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, program, sign_in, watch) = scene(directory.path());
+        let profile_id = ControlStore::open(&data)
+            .expect("store")
+            .claude_code_setup("claude")
+            .expect("connection")
+            .0;
+        let again = ClaudeCodeDeclaration {
+            name: "again".into(),
+            program,
+            config_folder: sign_in,
+        };
+        let held = hold_turn_observed(&watch, || {
+            withdraw(&data);
+            let mut store = ControlStore::open(&data).expect("store");
+            let refused = store.add_claude_code_profile(&again, store.revision());
+            assert!(
+                matches!(refused, Err(ControlError::ClaudeCodeSignInReserved(id)) if id == profile_id),
+                "the record reserves the folder: {refused:?}"
+            );
+        });
+        assert!(
+            matches!(
+                held,
+                Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Withdrawn))
+            ),
+            "the check sees the removal"
+        );
+        // Nothing started: no record is left and the lock is free.
+        assert!(!acknowledge_claude_code_cleanup(&data, profile_id).expect("free lock"));
+        let mut store = ControlStore::open(&data).expect("store");
+        store
+            .add_claude_code_profile(&again, store.revision())
+            .expect("the folder is free once the turn is gone");
     }
 }

@@ -201,7 +201,7 @@ pub enum ControlError {
     /// A change that withdrew a Claude Code connection is recorded, but a
     /// running turn of the connection did not end within the wait.
     #[error(
-        "the change is recorded, but a running Claude Code turn of this connection did not end within {} seconds; end that `omgcode` command, then check that no `claude` process of the connection remains",
+        "the change is recorded, but a running Claude Code turn of this connection did not end within {} seconds; end that `omgcode` command, then check that no `claude` process of the connection remains, including its MCP relays and their descendants",
         CLAUDE_CODE_TURN_STOP_WAIT.as_secs()
     )]
     ClaudeCodeTurnsRunning,
@@ -224,13 +224,13 @@ pub enum ControlError {
     /// identifier cannot be read, so the sign-in folder it reserves is
     /// unknown.
     #[error(
-        "a turn record of the Claude Code connection {0} cannot be read, so the sign-in folder it reserves is unknown; check that no `claude` process of that connection remains, then run `workspace claude-code-acknowledge {0}`"
+        "a turn record of the Claude Code connection {0} cannot be read, so the sign-in folder it reserves is unknown; check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
     )]
     ClaudeCodeTurnRecordUnreadable(uuid::Uuid),
     /// A removed Claude Code connection's turn whose end was not confirmed
     /// reserves an overlapping sign-in folder, or one that moved since.
     #[error(
-        "the folder overlaps the sign-in folder of the removed Claude Code connection {0}, whose turn was not observed to end, or that folder moved since the turn started; check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`"
+        "the folder overlaps the sign-in folder of the removed Claude Code connection {0}, whose turn was not observed to end, or that folder moved since the turn started; check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
     )]
     ClaudeCodeSignInReserved(uuid::Uuid),
 }

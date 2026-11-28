@@ -639,7 +639,8 @@ Anthropic approval, and the Claude subscription requirement stays open.
   grants cannot be removed. Revoking, and removing the connection with
   `provider-profile-remove` or the `settings` window, ends its running turns
   and waits up to 30 seconds for their processes to end. Each turn writes
-  a record before its launch and removes it only once its whole process
+  a record before its settings check and launch, so a removal that the
+  check misses finds it, and removes it only once its whole process
   tree was observed ended. A record left behind makes every such wait fail,
   also after OMGCode restarts, and keeps the connection's sign-in folder
   reserved, also once the connection is removed. Before running `workspace

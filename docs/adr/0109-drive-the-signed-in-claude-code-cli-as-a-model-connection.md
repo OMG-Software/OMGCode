@@ -131,11 +131,13 @@ Haiku request with one tool call.
    does for runs. Each `claude` process holds a shared lock on the
    connection's turn lock file, `claude-code/<profile id>.turns`, which lies
    beside the runtime folder and outside every grant. Before the per-turn
-   folder is made, the turn takes that lock and checks every settings state
-   recorded since it resolved the connection. Before the launch it also
-   writes and syncs a turn record,
+   folder is made, the turn takes that lock, writes and syncs a turn record,
    `claude-code/<profile id>.<turn id>.unconfirmed`, that names the
-   connection and its sign-in folder. The turn removes its record and
+   connection and its sign-in folder, and only then checks every settings
+   state recorded since it resolved the connection. A removal that this
+   check misses finds the record, which keeps the sign-in folder reserved,
+   and a turn that the check withdraws removes its record and starts
+   nothing. The turn removes its record and
    releases the lock only after its whole tree was observed ended and its
    relay workers stopped; a worker still running then keeps the lock until
    it ends. When the tree's end cannot be
@@ -210,7 +212,11 @@ Haiku request with one tool call.
    compare-and-swap, so a write that finished first is never reported as
    stopped. A write counts as finished only once the writer recorded it,
    after its flush returned: one whose bytes went out but that the watcher
-   stopped first still fails the turn and ends the tree. Before an answer is written, the relay's events already queued
+   stopped first still fails the turn and ends the tree. The writer records
+   first and checks after: once recorded, the watcher can no longer stop the
+   write, so the writer fails it, and ends the tree, when its cancellation or
+   deadline came before the record, also one the watcher had not yet seen.
+   Before an answer is written, the relay's events already queued
    are handled and the process's output is kept, in order, for the next
    round, so a cancellation sent while the runtime ran the call withholds
    the answer.
@@ -350,8 +356,9 @@ Haiku request with one tool call.
   operator acknowledges it, also after OMGCode restarts. The
   acknowledgement rests on the operator's own check of the whole tree, which
   OMGCode does not record.
-- A turn record is written before the launch, so a turn that cannot write
-  it does not start. A record whose removal fails after an observed end
+- A turn record is written before the settings check and the launch, so a
+  turn that cannot write it does not start, and a removal that races the
+  check finds it. A record whose removal fails after an observed end
   stays, and the operator acknowledges it like an unconfirmed end.
 - A revocation or removal waits up to 30 seconds for running turns. The
   wait proves the processes ended, not that their effects were undone: text

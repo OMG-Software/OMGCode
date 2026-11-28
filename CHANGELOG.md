@@ -46,7 +46,8 @@ Changes are recorded here before a release version is assigned.
   stop, stays held until OMGCode exits; a relay worker still running after
   the tree ended keeps it until that worker ends. Each turn writes and syncs
   a record, `claude-code/<profile id>.<turn id>.unconfirmed`, before its
-  launch and removes it only after its whole tree was observed ended. A
+  settings check and launch, so a removal that the check misses finds it,
+  and removes it only after its whole tree was observed ended. A
   record left behind outlives OMGCode, makes every later revocation and
   removal of the connection fail, and keeps its sign-in folder reserved, also
   once the connection is removed, until `workspace claude-code-acknowledge
@@ -79,7 +80,10 @@ Changes are recorded here before a release version is assigned.
   relay write has a deadline at which the channel is shut and the process
   tree ended, and a write that finished first is never reported as
   stopped. A write counts as finished only once its writer recorded it, so
-  one stopped first fails the turn even if its bytes went out. The main agent's text has an 8 MiB budget, a sub-agent's text
+  one stopped first fails the turn even if its bytes went out; the writer
+  checks the cancellation and deadline again after the record, so either
+  one that came first fails the write. The main agent's text has an 8 MiB
+  budget, a sub-agent's text
   delta is checked before it is ignored, a reused MCP request identifier is
   refused, the rendered prompt's size is checked before it is copied, a
   call whose cancellation is already queued is retired before any call is

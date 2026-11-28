@@ -2,12 +2,13 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use omgcode_platform::process::{ProcessError, StreamingChild, UnconfirmedCleanup};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -16,7 +17,7 @@ use super::super::ClaudeCodeFailure;
 use super::super::mcp::{McpServer, McpTool};
 use super::{
     EVENT_QUEUE, Event, Next, Progress, SERVER_NAME, Session, TOOL_PREFIX, TurnFolder,
-    UNCONFIRMED_TURNS, WriteRace, raced_write,
+    UNCONFIRMED_TURNS, WriteRace, raced_write, spawned,
 };
 use crate::control::{ClaudeCodeWatch, ControlError, wait_for_claude_code_turns};
 use crate::provider::ProviderError;
@@ -337,6 +338,7 @@ fn a_write_recorded_after_its_deadline_fails_and_stops_the_tree() {
         || {
             stops.fetch_add(1, Ordering::SeqCst);
         },
+        || {},
     );
     assert!(
         stopped_after_io,
@@ -370,6 +372,7 @@ fn a_write_recorded_after_a_cancellation_is_cancelled_and_stops_the_tree() {
         || {
             stops.fetch_add(1, Ordering::SeqCst);
         },
+        || {},
     );
     assert!(
         stopped_after_io,
@@ -400,6 +403,7 @@ fn a_write_whose_deadline_the_watcher_missed_still_fails() {
         || {
             stops.fetch_add(1, Ordering::SeqCst);
         },
+        || {},
     );
     assert_eq!(
         stops.load(Ordering::SeqCst),
@@ -413,6 +417,95 @@ fn a_write_whose_deadline_the_watcher_missed_still_fails() {
         ),
         "{result:?}"
     );
+}
+
+/// A write whose deadline passes after its I/O and just before its record,
+/// as when the writer is descheduled there, fails and stops the tree once
+/// although the watcher never sees the expiry: the writer checks the
+/// deadline again after the record, which the watcher can no longer undo.
+#[test]
+fn a_write_whose_deadline_passes_just_before_its_record_fails() {
+    let expired = AtomicBool::new(false);
+    let stops = AtomicUsize::new(0);
+    let result = raced_write(
+        || Ok(()),
+        &CancelToken::new(),
+        || expired.load(Ordering::SeqCst) && thread::current().name() != Some(WATCHER),
+        || {
+            stops.fetch_add(1, Ordering::SeqCst);
+        },
+        || expired.store(true, Ordering::SeqCst),
+    );
+    assert_eq!(
+        stops.load(Ordering::SeqCst),
+        1,
+        "the writer stopped the tree"
+    );
+    assert!(
+        matches!(
+            result,
+            Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+        ),
+        "{result:?}"
+    );
+}
+
+/// A write blocked in its I/O, as when the relay reads nothing, is released
+/// by the watcher once the turn is cancelled or its deadline passes. The
+/// writer signals that it is blocked and returns only once the stop came,
+/// failing as a channel that the tree's end closed fails it; the turn then
+/// reports the cancellation or the failure, and the tree is stopped once.
+#[test]
+fn a_write_blocked_in_its_io_is_released_by_a_cancellation_or_its_deadline() {
+    for by_cancellation in [true, false] {
+        let cancel = CancelToken::new();
+        let expired = AtomicBool::new(false);
+        let stops = AtomicUsize::new(0);
+        let (blocked, is_blocked) = mpsc::channel::<()>();
+        let mut released = false;
+        let result = thread::scope(|scope| {
+            let (cancel, expired) = (&cancel, &expired);
+            scope.spawn(move || {
+                // Bounded, so a failed test cannot leave it behind.
+                if is_blocked.recv_timeout(Duration::from_secs(30)).is_ok() {
+                    if by_cancellation {
+                        cancel.cancel();
+                    } else {
+                        expired.store(true, Ordering::SeqCst);
+                    }
+                }
+            });
+            raced_write(
+                || {
+                    blocked.send(()).expect("the releaser waits");
+                    released = held_until(&stops);
+                    Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+                },
+                cancel,
+                || expired.load(Ordering::SeqCst),
+                || {
+                    stops.fetch_add(1, Ordering::SeqCst);
+                },
+                || {},
+            )
+        });
+        assert!(released, "the stop released the blocked write");
+        assert_eq!(stops.load(Ordering::SeqCst), 1, "stopped once");
+        if by_cancellation {
+            assert!(
+                matches!(result, Err(ProviderError::Cancelled)),
+                "{result:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    result,
+                    Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+                ),
+                "{result:?}"
+            );
+        }
+    }
 }
 
 /// A write already cancelled or past its deadline never starts, and still
@@ -436,6 +529,7 @@ fn a_write_already_cancelled_or_late_never_starts() {
             || {
                 stops.fetch_add(1, Ordering::SeqCst);
             },
+            || {},
         );
         assert!(!started, "the I/O never started");
         assert_eq!(stops.load(Ordering::SeqCst), 1, "stopped once");
@@ -465,12 +559,13 @@ fn a_write_recorded_in_time_succeeds_without_stopping_the_tree() {
     let stop = || {
         stops.fetch_add(1, Ordering::SeqCst);
     };
-    raced_write(|| Ok(()), &cancel, || false, stop).expect("written");
+    raced_write(|| Ok(()), &cancel, || false, stop, || {}).expect("written");
     let failed = raced_write(
         || Err(std::io::Error::other("broken channel")),
         &cancel,
         || false,
         stop,
+        || {},
     );
     assert!(
         matches!(
@@ -505,6 +600,9 @@ fn held_session(data: &Path, runtime: &Path) -> (Session, SyncSender<Event>, Uui
 /// it. A session whose tree ended clears its record and releases the lock.
 #[test]
 fn an_unconfirmed_tree_end_keeps_the_turn_lock_and_its_record() {
+    let _serial = UNCONFIRMED_SERIAL
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let data = TempDir::new().expect("data folder");
     fs::create_dir(data.path().join("claude-code")).expect("runtime parent");
     let short = Duration::from_millis(200);
@@ -526,8 +624,66 @@ fn an_unconfirmed_tree_end_keeps_the_turn_lock_and_its_record() {
             matches!(waited, Err(ControlError::ClaudeCodeTurnsRunning)),
             "the lock is held while this process runs: {waited:?}"
         );
-        // This process's exit releases the held lock; no other test of this
-        // binary leaves an unconfirmed end, so the last one held is this.
+        // This process's exit releases the held lock; the tests that leave
+        // an unconfirmed end run one at a time, so the last one held is this.
+        let held = UNCONFIRMED_TURNS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop();
+        assert!(held.is_some(), "the lock was kept");
+        drop(held);
+        let waited = wait_for_claude_code_turns(data.path(), profile_id, short);
+        assert!(
+            matches!(waited, Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == profile_id),
+            "the record outlives the lock: {waited:?}"
+        );
+    }
+}
+
+/// The tests that leave an unconfirmed end and then release the lock it
+/// holds, as this process's exit would, run one at a time.
+static UNCONFIRMED_SERIAL: Mutex<()> = Mutex::new(());
+
+/// A launch whose platform reports a tree it started and could not stop
+/// goes through the launch's own error path: the turn fails, keeps the
+/// connection's lock while this process runs, and keeps its record after
+/// this process exits, so every later wait fails until acknowledged. Any
+/// other launch failure started nothing and leaves neither.
+#[test]
+fn a_launch_that_could_not_stop_its_tree_blocks_waits_past_exit() {
+    let _serial = UNCONFIRMED_SERIAL
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let data = TempDir::new().expect("data folder");
+    fs::create_dir(data.path().join("claude-code")).expect("runtime parent");
+    let short = Duration::from_millis(200);
+    for unstopped in [true, false] {
+        let runtime = TempDir::new().expect("runtime folder");
+        let (mut session, _sender, profile_id) = held_session(data.path(), runtime.path());
+        let error = if unstopped {
+            ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::new("a test tree"))
+        } else {
+            ProcessError::InvalidSpec("a test launch")
+        };
+        let launched = spawned(&mut session, Err::<StreamingChild, _>(error));
+        assert!(
+            matches!(
+                launched,
+                Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+            ),
+            "{launched:?}"
+        );
+        // A failed launch drops its session, which ends the turn.
+        drop(session);
+        let waited = wait_for_claude_code_turns(data.path(), profile_id, short);
+        if !unstopped {
+            waited.expect("nothing started, so the turn left nothing");
+            continue;
+        }
+        assert!(
+            matches!(waited, Err(ControlError::ClaudeCodeTurnsRunning)),
+            "the lock is held while this process runs: {waited:?}"
+        );
         let held = UNCONFIRMED_TURNS
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

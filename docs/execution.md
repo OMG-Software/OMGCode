@@ -958,8 +958,8 @@ and a tool turn keeps that process for all its rounds.
   `claude-code/<profile id>.turns` in application storage, outside every
   grant, from before its per-turn folder is made until its whole tree was
   observed ended and its relay workers stopped; a worker still running
-  then keeps the lock until it ends. Before the launch the turn writes and
-  syncs a turn record, `claude-code/<profile id>.<turn id>.unconfirmed`,
+  then keeps the lock until it ends. Under that lock the turn first writes
+  and syncs a turn record, `claude-code/<profile id>.<turn id>.unconfirmed`,
   that names the connection and its sign-in folder, and it removes the
   record only after that observed end. A lock whose tree's end was not
   confirmed, also of a tree the launch could not stop, stays held until the
@@ -972,8 +972,9 @@ and a tool turn keeps that process for all its rounds.
   their descendants; if you cannot confirm that the tree ended, keep the
   record. The command removes the connection's records under the exclusive
   lock, is refused while a turn holds the lock, and records nothing about
-  that check. Before the launch the turn checks every
-  settings state recorded since it resolved the connection, and while the
+  that check. After it wrote its record and before the launch, the turn
+  checks every settings state recorded since it resolved the connection, so
+  a removal that this check misses finds the record. While the
   process runs a watcher checks each later state every 100 ms and once more
   as it stops. A state that removes the connection or, on Windows, leaves a
   role without an active grant ends the tree, and the turn fails with
@@ -995,7 +996,9 @@ and a tool turn keeps that process for all its rounds.
   holds back the process's output. Each write to the relay ends at the
   request timeout or on cancellation; it counts as finished only once its
   writer recorded it after the flush, so one stopped first fails the turn
-  even if its bytes went out. The main agent's text has an 8 MiB budget. The Linux folder has a random
+  even if its bytes went out. The writer checks the cancellation and the
+  deadline again after its record, so either one that came first, also one
+  the watcher had not yet seen, fails the write. The main agent's text has an 8 MiB budget. The Linux folder has a random
   name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
   that is unset, relative, or too long, because a socket path must fit in
   107 bytes and one beneath application storage does not.
