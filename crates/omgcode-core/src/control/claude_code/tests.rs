@@ -125,7 +125,7 @@ fn a_claude_code_profile_is_recorded_replayed_and_removed() {
         .revoke_claude_code_grants("claude")
         .expect("no grants");
     assert_eq!(revoked.revoked, 0);
-    assert!(!revoked.profile_deleted);
+    assert_eq!(revoked.profile_deleted, cfg!(windows));
     let removed = store
         .remove_provider_profile("claude", revision + 1)
         .expect("remove");
@@ -419,6 +419,206 @@ fn claude_code_container_names_are_stable_and_distinct() {
     );
 }
 
+/// Only a Claude Code connection can be revoked, and a connection with no
+/// grant still attempts the container profile deletion, so a retry finishes it.
+#[test]
+fn revoking_refuses_other_profiles_and_retries_deletion_without_grants() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    store
+        .add_provider_profile(
+            &ProviderProfileDeclaration {
+                name: "local".into(),
+                kind: "lm_studio".into(),
+                auth: "none".into(),
+                endpoint: None,
+            },
+            store.revision(),
+        )
+        .expect("other profile");
+    let events = store.entries.len();
+    assert!(matches!(
+        store.revoke_claude_code_grants("local"),
+        Err(ControlError::ProviderRefused(
+            "this provider profile is not a claude_code connection"
+        ))
+    ));
+    assert!(matches!(
+        store.revoke_claude_code_grants("missing"),
+        Err(ControlError::UnknownProvider)
+    ));
+    for _ in 0..2 {
+        let revoked = store.revoke_claude_code_grants("claude").expect("revoke");
+        assert_eq!(revoked.revoked, 0);
+        assert_eq!(revoked.profile_deleted, cfg!(windows));
+    }
+    assert_eq!(store.entries.len(), events);
+}
+
+/// A development root that equals, contains, or lies inside a recorded
+/// sign-in folder is refused before it is recorded; a separate root is not.
+#[test]
+fn a_development_root_overlapping_a_sign_in_folder_is_refused() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    let outer = scene.data.with_file_name("outer");
+    let nested = outer.join("sign-in");
+    fs::create_dir_all(&nested).expect("nested sign-in folder");
+    for (name, folder) in [("claude", &scene.sign_in), ("nested", &nested)] {
+        let declaration = ClaudeCodeDeclaration {
+            name: name.to_owned(),
+            program: scene.program.clone(),
+            config_folder: folder.clone(),
+        };
+        store
+            .add_claude_code_profile(&declaration, store.revision())
+            .expect("profile");
+    }
+    let inside = nested.join("work");
+    fs::create_dir(&inside).expect("folder inside a sign-in folder");
+    let events = store.entries.len();
+    for (case, root) in [
+        ("equal", &scene.sign_in),
+        ("ancestor", &outer),
+        ("descendant", &inside),
+    ] {
+        assert!(
+            matches!(
+                store.set_development_root(root, store.revision()),
+                Err(ControlError::GrantRefused(reason))
+                    if reason.starts_with("the development root must not overlap a Claude Code sign-in folder")
+            ),
+            "{case}"
+        );
+        assert_eq!(store.entries.len(), events, "{case}");
+    }
+    let apart = scene.data.with_file_name("elsewhere");
+    fs::create_dir(&apart).expect("separate root");
+    store
+        .set_development_root(&apart, store.revision())
+        .expect("a separate root");
+    assert_eq!(store.entries.len(), events + 1);
+}
+
+/// A turn re-checks that the sign-in folder is still outside the current
+/// development root, and outside every workspace container grant.
+#[test]
+fn resolving_refuses_a_sign_in_folder_that_now_overlaps_other_scopes() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    let workspace = store.workspaces().next().expect("workspace").id();
+
+    let grant =
+        store.test_record_grant(workspace, &scene.sign_in, ContainerGrantAccess::ReadExecute);
+    assert!(matches!(
+        store.resolve_claude_code("claude", &scene.program),
+        Err(ControlError::ProviderRefused(
+            "the Claude sign-in folder must not overlap a workspace container grant; revoke that grant first"
+        ))
+    ));
+    store.test_record_revocation(grant);
+
+    let inside = scene.sign_in.join("work");
+    fs::create_dir(&inside).expect("folder inside the sign-in folder");
+    let root = DirectoryRecord::capture(&inside).expect("root");
+    store
+        .append(
+            Action::RootSet { directory: root },
+            store.next_revision().expect("revision"),
+        )
+        .expect("a root recorded before the check existed");
+    assert!(matches!(
+        store.resolve_claude_code("claude", &scene.program),
+        Err(ControlError::ProviderRefused(
+            "the Claude sign-in folder must be outside the development root"
+        ))
+    ));
+}
+
+/// A recorded workspace container grant keeps a sign-in folder from being
+/// recorded when it overlaps, and a separate folder is still accepted.
+#[test]
+fn a_sign_in_folder_overlapping_a_container_grant_is_refused() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    let granted = scene.data.with_file_name("granted");
+    let inside = granted.join("sign-in");
+    fs::create_dir_all(&inside).expect("folder inside the grant");
+    let workspace = store.workspaces().next().expect("workspace").id();
+    store.test_record_grant(workspace, &granted, ContainerGrantAccess::ReadExecute);
+    for folder in [&granted, &inside] {
+        let declaration = ClaudeCodeDeclaration {
+            name: "claude".to_owned(),
+            program: scene.program.clone(),
+            config_folder: folder.clone(),
+        };
+        assert!(matches!(
+            store.check_claude_code_profile(&declaration),
+            Err(ControlError::ProviderRefused(
+                "the Claude sign-in folder must not overlap a workspace container grant; revoke that grant first"
+            ))
+        ));
+    }
+    store
+        .check_claude_code_profile(&scene.declaration("claude"))
+        .expect("a separate sign-in folder");
+}
+
+/// Two connections cannot record the same or nested sign-in folders, and an
+/// unchanged connection still passes its own check.
+#[test]
+fn connections_keep_separate_sign_in_folders() {
+    let scene = Scene::new();
+    let mut store = scene.store();
+    let profile = store
+        .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+        .expect("profile");
+    let inside = scene.sign_in.join("other");
+    fs::create_dir(&inside).expect("nested folder");
+    let apart = scene.data.with_file_name("apart");
+    fs::create_dir(&apart).expect("separate folder");
+    for (case, folder) in [("same", &scene.sign_in), ("nested", &inside)] {
+        let declaration = ClaudeCodeDeclaration {
+            name: "second".to_owned(),
+            program: scene.program.clone(),
+            config_folder: folder.clone(),
+        };
+        assert!(
+            matches!(
+                store.add_claude_code_profile(&declaration, store.revision()),
+                Err(ControlError::ProviderRefused(
+                    "the Claude sign-in folder must not overlap another Claude Code connection's sign-in folder"
+                ))
+            ),
+            "{case}"
+        );
+    }
+    let declaration = ClaudeCodeDeclaration {
+        name: "second".to_owned(),
+        program: scene.program.clone(),
+        config_folder: apart,
+    };
+    store
+        .add_claude_code_profile(&declaration, store.revision())
+        .expect("a separate folder");
+    let (_, setup) = store.claude_code_setup("claude").expect("setup");
+    store
+        .check_config_folder(&setup.config_folder, Some(profile.id()))
+        .expect("an unchanged connection passes its own check");
+    assert!(
+        store
+            .check_config_folder(&setup.config_folder, None)
+            .is_err(),
+        "without the exception the connection's own folder overlaps"
+    );
+}
+
 #[cfg(not(windows))]
 #[test]
 fn other_platforms_refuse_claude_code_grants_without_recording_them() {
@@ -526,16 +726,125 @@ mod windows {
             .add_claude_code_profile(&scene.declaration("claude"), store.revision())
             .expect("profile");
         let events = store.entries.len();
-        for folder in [&scene.root, &scene.data] {
+        let revision = store.revision();
+        assert!(matches!(
+            store.grant_claude_code("claude", &scene.root, revision),
+            Err(ControlError::GrantRefused(
+                "a Claude Code folder must not contain the development root"
+            ))
+        ));
+        assert!(matches!(
+            store.grant_claude_code("claude", &scene.data, revision),
+            Err(ControlError::GrantRefused(
+                "a Claude Code folder must not contain application storage"
+            ))
+        ));
+        assert_eq!(store.entries.len(), events);
+        assert_eq!(store.revision(), revision);
+        assert!(store.claude_code_grants().is_empty());
+    }
+
+    /// A relay program beside the `claude` program shares its folder; the
+    /// plan is refused as a whole, so no earlier role is granted.
+    #[test]
+    fn a_plan_with_a_shared_folder_is_refused_before_any_grant() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        let profile = store
+            .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+            .expect("profile");
+        let events = store.entries.len();
+        let revision = store.revision();
+        let program_folder = scene.program.parent().expect("folder");
+        assert!(matches!(
+            store.grant_claude_code("claude", program_folder, revision),
+            Err(ControlError::GrantRefused(
+                "two roles of this connection name the same folder"
+            ))
+        ));
+        assert_eq!(store.entries.len(), events);
+        assert_eq!(store.revision(), revision);
+        assert!(store.claude_code_grants().is_empty());
+        for path in [program_folder, &scene.sign_in] {
+            assert_eq!(access(path, profile.id()), None, "{}", path.display());
+        }
+        let name = claude_code_container(profile.id()).expect("name");
+        assert!(!profile_exists(&name).expect("profile"));
+    }
+
+    /// A container profile left behind after the last revocation is deleted
+    /// by a later revoke, although no grant remains.
+    #[test]
+    fn a_later_revoke_deletes_a_container_profile_that_has_no_grants() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        let profile = store
+            .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+            .expect("profile");
+        let name = claude_code_container(profile.id()).expect("name");
+        // The interrupted run: the last grant was revoked, the deletion was not.
+        let relay = DirectoryRecord::capture(&scene.relay).expect("relay");
+        let live = relay.live_path().expect("live path");
+        omgcode_platform::container::grant(
+            &live,
+            relay.native_identity(),
+            &name,
+            ContainerAccess::ReadExecute,
+        )
+        .expect("creates the profile");
+        omgcode_platform::container::revoke(&live, relay.native_identity(), &name)
+            .expect("revokes");
+        assert!(profile_exists(&name).expect("profile"));
+        let revoked = store.revoke_claude_code_grants("claude").expect("revoke");
+        assert_eq!(revoked.revoked, 0);
+        assert!(revoked.profile_deleted);
+        assert!(!profile_exists(&name).expect("profile"));
+        let again = store.revoke_claude_code_grants("claude").expect("again");
+        assert!(again.profile_deleted, "an absent profile counts as deleted");
+    }
+
+    /// A workspace container grant and a sign-in folder cannot overlap in
+    /// either direction; an unrelated external folder is still granted.
+    #[test]
+    fn workspace_grants_and_sign_in_folders_stay_disjoint() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        store
+            .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+            .expect("profile");
+        let workspace = store.workspaces().next().expect("workspace").id();
+        let above = scene.data.with_file_name("above");
+        let inside = above.join("sign-in");
+        fs::create_dir_all(&inside).expect("nested folder");
+        let declaration = ClaudeCodeDeclaration {
+            name: "nested".to_owned(),
+            program: scene.program.clone(),
+            config_folder: inside.clone(),
+        };
+        store
+            .add_claude_code_profile(&declaration, store.revision())
+            .expect("nested profile");
+        let reason = "a container grant must not overlap a Claude Code sign-in folder";
+        for folder in [&scene.sign_in, &above, &inside] {
             assert!(
-                store
-                    .grant_claude_code("claude", folder, store.revision())
-                    .is_err(),
+                matches!(
+                    store.check_container_grants(
+                        workspace,
+                        std::slice::from_ref(folder),
+                        ContainerGrantAccess::ReadExecute
+                    ),
+                    Err((0, ControlError::GrantRefused(refused))) if refused == reason
+                ),
                 "{}",
                 folder.display()
             );
         }
-        assert_eq!(store.entries.len(), events);
-        assert!(store.claude_code_grants().is_empty());
+        store
+            .check_container_grants(
+                workspace,
+                std::slice::from_ref(&scene.relay),
+                ContainerGrantAccess::ReadExecute,
+            )
+            .expect("an unrelated external folder");
     }
 }

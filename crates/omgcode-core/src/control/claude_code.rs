@@ -356,7 +356,7 @@ impl ControlStore {
                 "the Claude sign-in folder must be an existing folder; create it and sign in with `claude auth login` first",
             )
         })?;
-        self.check_config_folder(&config_folder)?;
+        self.check_config_folder(&config_folder, None)?;
         if config_folder.same_directory(&program_folder) {
             return Err(ControlError::ProviderRefused(
                 "the Claude sign-in folder must not be the program's folder",
@@ -436,7 +436,7 @@ impl ControlStore {
             return Err(ControlError::DirectoryChanged);
         }
         self.check_readable_folder(&setup.program_folder)?;
-        self.check_config_folder(&setup.config_folder)?;
+        self.check_config_folder(&setup.config_folder, Some(profile_id))?;
         let planned = [
             (ClaudeCodeGrantRole::Program, setup.program_folder.clone()),
             (
@@ -446,9 +446,9 @@ impl ControlStore {
             (ClaudeCodeGrantRole::Runtime, runtime),
             (ClaudeCodeGrantRole::Relay, relay),
         ];
-        let name = claude_code_container(profile_id)?;
-        let sid = platform::container_sid(&name).map_err(ControlError::Container)?;
-        let mut granted = Vec::new();
+        // The whole plan is checked before the first intent is recorded, so
+        // a refused plan changes no record and no access-control list.
+        let mut todo: Vec<(ClaudeCodeGrantRole, DirectoryRecord)> = Vec::new();
         for (role, directory) in planned {
             let existing =
                 self.snapshot.claude_code_grants.iter().find(|status| {
@@ -465,9 +465,9 @@ impl ControlStore {
             }
             // Read-execute folders are shared by several roles only in odd
             // setups; one ACE per folder keeps revocation exact.
-            if granted
+            if todo
                 .iter()
-                .any(|earlier: &ClaudeCodeGrant| earlier.directory.same_directory(&directory))
+                .any(|(_, earlier)| earlier.same_directory(&directory))
                 || self.snapshot.claude_code_grants.iter().any(|status| {
                     status.grant.profile_id == profile_id
                         && status.grant.directory.same_directory(&directory)
@@ -477,6 +477,12 @@ impl ControlStore {
                     "two roles of this connection name the same folder",
                 ));
             }
+            todo.push((role, directory));
+        }
+        let name = claude_code_container(profile_id)?;
+        let sid = platform::container_sid(&name).map_err(ControlError::Container)?;
+        let mut granted = Vec::new();
+        for (role, directory) in todo {
             let grant = ClaudeCodeGrant {
                 id: Uuid::new_v4(),
                 profile_id,
@@ -509,13 +515,15 @@ impl ControlStore {
     }
 
     /// Revoke every grant of one Claude Code connection, then delete its
-    /// container profile. A pending grant is revoked too: its ACL change may
+    /// container profile, also when no grant remains, so an interrupted
+    /// deletion can be retried. A pending grant is revoked too: its ACL change may
     /// or may not have happened, and revoking an absent entry succeeds.
     ///
     /// # Errors
     ///
-    /// [`ControlError::UnknownProvider`] for an unknown profile, the platform
-    /// error that stopped a revocation (later grants stay recorded), or
+    /// [`ControlError::UnknownProvider`] for an unknown profile,
+    /// [`ControlError::ProviderRefused`] for a profile that is not a Claude
+    /// Code connection, the platform error that stopped a revocation (later grants stay recorded), or
     /// [`ControlError::ProfileRemoval`] when every grant was revoked but the
     /// profile could not be deleted.
     pub fn revoke_claude_code_grants(
@@ -523,10 +531,7 @@ impl ControlStore {
         name: &str,
     ) -> Result<ClaudeCodeRevocation, ControlError> {
         self.ensure_healthy()?;
-        let profile_id = self
-            .provider_profile(name)
-            .map(|status| status.profile().id())
-            .ok_or(ControlError::UnknownProvider)?;
+        let (profile_id, _) = self.claude_code_setup(name)?;
         let grants: Vec<ClaudeCodeGrantStatus> = self
             .snapshot
             .claude_code_grants
@@ -551,12 +556,14 @@ impl ControlStore {
             self.append(Action::ClaudeCodeGrantRevoked { grant_id }, self.revision())?;
             revoked += 1;
         }
-        let profile_deleted = if grants.is_empty() {
-            false
-        } else {
+        // Deleting an absent container profile succeeds, so a retry after an
+        // interrupted deletion finishes it even when no grant remains.
+        let profile_deleted = if platform_grants_supported() {
             let container = claude_code_container(profile_id)?;
             platform::delete_profile(&container).map_err(ControlError::ProfileRemoval)?;
             true
+        } else {
+            false
         };
         Ok(ClaudeCodeRevocation {
             revoked,
@@ -576,8 +583,10 @@ impl ControlStore {
     ///
     /// [`ControlError::UnknownProvider`] or [`ControlError::ProviderRefused`]
     /// for an unknown or other profile, [`ControlError::DirectoryChanged`]
-    /// when a recorded folder changed, [`ControlError::GrantRefused`] when a
-    /// grant is missing, pending, or for another folder, and the I/O error
+    /// when a recorded folder changed, [`ControlError::ProviderRefused`] when
+    /// the sign-in folder now overlaps application storage, the development
+    /// root, a workspace, a workspace container grant, or another connection's
+    /// sign-in folder, [`ControlError::GrantRefused`] when a grant is missing, pending, or for another folder, and the I/O error
     /// that stopped a check.
     pub fn resolve_claude_code(
         &self,
@@ -588,6 +597,9 @@ impl ControlStore {
         let (profile_id, setup) = self.claude_code_setup(name)?;
         let program = setup.live_program()?;
         let config_folder = setup.live_config_folder()?;
+        // The sign-in folder must still be outside everything a model-run
+        // program can reach, which can have changed since it was recorded.
+        self.check_config_folder(&setup.config_folder, Some(profile_id))?;
         let relay_program = std::fs::canonicalize(relay_program)?;
         let relay_folder = relay_program.parent().ok_or(ControlError::GrantRefused(
             "the relay program has no folder",
@@ -692,8 +704,14 @@ impl ControlStore {
 
     /// Refuse a sign-in folder that is too broad or that any other part of
     /// OMGCode can reach: it must not overlap application storage, the
-    /// development root, or any workspace, so no model file tool can read it.
-    fn check_config_folder(&self, directory: &DirectoryRecord) -> Result<(), ControlError> {
+    /// development root, any workspace, any workspace container grant, or the
+    /// sign-in folder of a Claude Code connection other than `profile`, so no
+    /// model file tool or model-run program can read it.
+    fn check_config_folder(
+        &self,
+        directory: &DirectoryRecord,
+        profile: Option<Uuid>,
+    ) -> Result<(), ControlError> {
         check_not_broad(directory)?;
         if directory.contains(&self.data_directory)? || self.data_directory.contains(directory)? {
             return Err(ControlError::ProviderRefused(
@@ -716,7 +734,44 @@ impl ControlStore {
                 ));
             }
         }
+        for status in &self.snapshot.container_grants {
+            let granted = status.grant().directory();
+            if directory.contains(granted)? || granted.contains(directory)? {
+                return Err(ControlError::ProviderRefused(
+                    "the Claude sign-in folder must not overlap a workspace container grant; revoke that grant first",
+                ));
+            }
+        }
+        if self.overlaps_claude_code_sign_in(directory, profile)? {
+            return Err(ControlError::ProviderRefused(
+                "the Claude sign-in folder must not overlap another Claude Code connection's sign-in folder",
+            ));
+        }
         Ok(())
+    }
+
+    /// Whether `directory` equals, contains, or lies inside the sign-in
+    /// folder of a recorded Claude Code connection, leaving out the one with
+    /// the identifier `except`.
+    pub(super) fn overlaps_claude_code_sign_in(
+        &self,
+        directory: &DirectoryRecord,
+        except: Option<Uuid>,
+    ) -> Result<bool, ControlError> {
+        for status in self.provider_profiles() {
+            if Some(status.profile().id()) == except {
+                continue;
+            }
+            let Some(setup) = status.profile().claude_code_setup() else {
+                continue;
+            };
+            if directory.contains(&setup.config_folder)?
+                || setup.config_folder.contains(directory)?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 

@@ -1184,6 +1184,11 @@ impl ControlStore {
         if self.snapshot.development_root.as_ref() == Some(&directory) {
             return Ok(());
         }
+        if self.overlaps_claude_code_sign_in(&directory, None)? {
+            return Err(ControlError::GrantRefused(
+                "the development root must not overlap a Claude Code sign-in folder; remove that connection with `workspace provider-profile-remove` first",
+            ));
+        }
         self.append(Action::RootSet { directory }, self.next_revision()?)
     }
 

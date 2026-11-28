@@ -410,6 +410,11 @@ impl ControlStore {
         let directory = DirectoryRecord::capture(path)?;
         self.check_storage_overlap(&directory)?;
         self.check_grant_scope(&workspace.directory, &directory, access)?;
+        if self.overlaps_claude_code_sign_in(&directory, None)? {
+            return Err(ControlError::GrantRefused(
+                "a container grant must not overlap a Claude Code sign-in folder",
+            ));
+        }
         if self.snapshot.container_grants.iter().any(|status| {
             status.grant.workspace_id == workspace_id
                 && status.grant.directory.same_directory(&directory)
