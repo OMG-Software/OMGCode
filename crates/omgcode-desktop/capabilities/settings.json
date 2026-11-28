@@ -7,6 +7,7 @@
     "settings"
   ],
   "permissions": [
+    "allow-settings-add-claude-code",
     "allow-settings-add-connection",
     "allow-settings-add-discovered-profiles",
     "allow-settings-add-package-profile",
@@ -19,6 +20,7 @@
     "allow-settings-clear-package-cache",
     "allow-settings-clear-scope",
     "allow-settings-discover-toolchains",
+    "allow-settings-grant-claude-code",
     "allow-settings-grant-container-folder",
     "allow-settings-import-skill",
     "allow-settings-overview",
@@ -29,6 +31,7 @@
     "allow-settings-remove-toolchain-profile",
     "allow-settings-remove-web-fetch-host",
     "allow-settings-repair-data-folder",
+    "allow-settings-revoke-claude-code",
     "allow-settings-revoke-container-grant",
     "allow-settings-save-chat-defaults",
     "allow-settings-select-connection",

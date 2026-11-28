@@ -720,6 +720,7 @@ fn a_service_opens_on_a_new_data_root_and_lists_nothing() {
             endpoint: NO_ENDPOINT.to_owned(),
             token_source: omgcode_app::TokenSource::Environment,
             stream: true,
+            claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
         },
         no_token,
     )

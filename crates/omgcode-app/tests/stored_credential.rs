@@ -400,6 +400,7 @@ fn a_keyless_profile_passes_the_launch_check_and_opens_the_service() {
         endpoint: launch.endpoint,
         token_source: TokenSource::Profile("open".to_owned()),
         stream: true,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("the service opens");
 }

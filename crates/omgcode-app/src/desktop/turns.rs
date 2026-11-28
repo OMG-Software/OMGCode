@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use omgcode_core::control::CLAUDE_CODE_TURN_STOP_WAIT;
 use omgcode_core::session::SessionJournal;
 use omgcode_core::skills::SkillName;
 use omgcode_core::turn::{ApprovalWaitSlot, AwaitedCall, CancelToken};
@@ -71,6 +72,9 @@ pub(super) struct Slot {
     handle: Option<JoinHandle<()>>,
     /// The call the running turn waits on, shared with the turn thread.
     awaited: ApprovalWaitSlot,
+    /// Whether the turn runs through a Claude Code connection, whose process
+    /// can take longer to stop than shutdown's grace (ADR-0111).
+    claude_code: bool,
     /// Order in which finished slots were finished; smaller is older.
     finished_order: u64,
 }
@@ -122,6 +126,13 @@ impl TurnTable {
             .count()
     }
 
+    /// Whether a thread not joined yet runs a Claude Code turn.
+    fn claude_code_unjoined(&self) -> bool {
+        self.slots
+            .values()
+            .any(|slot| slot.claude_code && slot.handle.is_some())
+    }
+
     /// Slots whose thread has not been joined yet.
     fn unjoined_count(&self) -> usize {
         self.slots
@@ -137,6 +148,7 @@ impl TurnTable {
         session_id: Uuid,
         handle: JoinHandle<()>,
         awaited: ApprovalWaitSlot,
+        claude_code: bool,
     ) {
         self.slots.insert(
             session_id,
@@ -147,6 +159,7 @@ impl TurnTable {
                 },
                 handle: Some(handle),
                 awaited,
+                claude_code,
                 finished_order: 0,
             },
         );
@@ -275,13 +288,21 @@ impl Inner {
     }
 
     /// Request cancellation of every turn, wait up to `grace`, and report.
+    /// While a Claude Code turn runs, the wait is at least
+    /// [`CLAUDE_CODE_TURN_STOP_WAIT`], so its process tree can stop and be
+    /// observed ended (ADR-0111).
     pub(super) fn shutdown_turns(&self, grace: Duration) -> ShutdownReport {
-        let deadline = Instant::now().checked_add(grace);
-        let in_flight = match self.lock_turns() {
+        let started = Instant::now();
+        let (in_flight, grace) = match self.lock_turns() {
             Ok(mut turns) => {
                 turns.closed = true;
                 turns.request_cancel_all();
-                turns.unjoined_count()
+                let grace = if turns.claude_code_unjoined() {
+                    grace.max(CLAUDE_CODE_TURN_STOP_WAIT)
+                } else {
+                    grace
+                };
+                (turns.unjoined_count(), grace)
             }
             // A poisoned table cannot be inspected or cancelled; nothing is
             // known to be finished.
@@ -292,6 +313,7 @@ impl Inner {
                 };
             }
         };
+        let deadline = started.checked_add(grace);
         let mut remaining = in_flight;
         loop {
             if self.reap().is_err() {
@@ -512,6 +534,7 @@ mod tests {
             endpoint: "http://127.0.0.1:1/v1".to_owned(),
             token_source: TokenSource::Environment,
             stream: true,
+            claude_code: crate::desktop::ClaudeCodeHost::default(),
         })
         .expect("open service");
         let handle = thread::spawn(|| ());
@@ -519,6 +542,7 @@ mod tests {
             session_id,
             handle,
             ApprovalWaitSlot::new(),
+            false,
         );
         (directory, service)
     }

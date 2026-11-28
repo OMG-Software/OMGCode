@@ -6,6 +6,113 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.74.0 lets a desktop session choose a Claude Code connection and
+  run its turns through the operator's signed-in `claude` program, and adds,
+  grants, and revokes the connection in the `settings` window, where Add
+  finds the program, creates the sign-in folder, grants it, and starts
+  Claude's own sign-in (ADR-0111, amending ADR-0109 decisions 2 and 10). It
+  is a minor version because the public `DesktopConfig` gains `claude_code`
+  (a `ClaudeCodeHost` with the relay, the program search, and the sign-in
+  parent), `ProviderProfileView` gains `claude_code`, and the new
+  `FilePurpose`, `ClaudeCodeHost`, `ClaudeCodeSignIn`,
+  `start_claude_code_sign_in`, `ClaudeCodeAddRequest`,
+  `ClaudeCodeConnectionRequest`, `ClaudeCodeView`, and
+  `ClaudeCodeGrantView` are exported; `SettingsPrompt::pick_file` has a
+  default that cancels and the new `SettingsPrompt::start_claude_code_sign_in`
+  one that refuses. Core exports `claude_code_program_candidates` and
+  `CLAUDE_CODE_PROGRAM_NAME`, and the platform crate
+  `process::start_in_new_console`. The `main`
+  window's model box lists every recorded `claude_code` connection as
+  Claude Code. Choosing one needs the native confirmation, whose text names
+  the `claude` program and the sign-in folder and says that each turn's
+  messages, instructions, selected skills, and tool results go to that
+  program and through it to Anthropic. The session record keeps the label
+  `claude-code:<profile>`, the one the CLI writes into request manifests,
+  and the profile's identifier in a new optional `profile_id` field that
+  only a Claude Code choice writes; a build before 0.74.0 finds a file with
+  one unreadable and treats it as empty. Every turn opens the settings store
+  again: a removed profile, another kind, another label, or another profile
+  added under the same name refuses the turn with
+  `session_connection_stale`, and status and reselection apply the same
+  rule, so such a replacement needs the session's confirmation again. Core's
+  `resolve_claude_code` checks the program, the sign-in folder, and on
+  Windows every grant before any process starts, failing with
+  `claude_code_unusable`, and the profile it resolved must carry the
+  identifier the session confirmed. The desktop passes the `omgcode` executable in the
+  folder of its own canonical executable as the MCP relay, when that file
+  exists; without one a turn starts nothing. The model box offers the
+  aliases `sonnet`, `opus`, `haiku`, `fable`, `sonnet[1m]`, and `opus[1m]`
+  without asking a server, and the **Effort** box `low`, `medium`, `high`,
+  `xhigh`, and `max` (core's new `CLAUDE_CODE_EFFORTS`). Shutdown waits at
+  least core's 30-second `CLAUDE_CODE_TURN_STOP_WAIT` while a Claude Code
+  turn runs. The desktop's `--provider-profile` launch argument and
+  `omgcode models` still refuse the kind with `claude_code_cli_only`, whose
+  message now also names a desktop session's own choice, and core's
+  selectable check still keeps it from being the global selection. The `settings` window offers Claude Code last in its add
+  dropdown, hides the endpoint and key fields for it, and says what Add
+  does. The new `settings_add_claude_code` takes the revision and a name.
+  Rust takes the first `claude` (`claude.exe` on Windows) in at most 128
+  folders of the operator's `PATH`, then in the native installer's
+  `~/.local/bin`, that core accepts. Core's new
+  `claude_code_program_discoverable` skips one whose folder is, or lies
+  inside, application storage, the development root, or a workspace, where
+  a model could have written it. Rust opens a native file dialog (filtered
+  to `.exe` on Windows) only when no other file exists; it creates a new, empty sign-in folder with a random
+  name under `omgcode-claude-code` in the per-user local data folder and
+  removes it again when the add is cancelled or refused. Core's checks run
+  before the confirmation, and one confirmation names the program, the
+  folder, and on Windows the four folders to grant, before core records the
+  connection. On Windows the same Add grants them, refusing first when no
+  relay sits beside the application, and then starts Claude's own `claude
+  auth login` in a console window of its own, outside the sandbox, with the
+  folder as `CLAUDE_CONFIG_DIR` and working folder and an environment built
+  from nothing that sets `CLAUDE_CODE_SAFE_MODE`; OMGCode waits for nothing
+  and never reads the folder. Elsewhere the confirmation names the terminal
+  command. A grant that fails, or a sign-in that does not start, leaves the
+  connection recorded and names that command. A failed write of the
+  settings journal, which may still have recorded the connection, keeps the
+  folder and fails with the new `connection_uncertain`, naming the folder
+  and that command. The sign-in starts only for that new folder, so signing
+  in again is removing and adding the connection, after revoking its
+  folders on Windows; the row says which. On Windows `settings_grant_claude_code` grants the
+  connection's AppContainer its program, sign-in, runtime, and relay
+  folders again after a confirmation that names all four, and
+  `settings_revoke_claude_code` revokes them after a confirmation and waits
+  up to 30 seconds, with the settings store released, for the connection's
+  turns to end; a revocation that stopped after recording its withdrawal
+  says whether they ended. A connection's row shows **Per session**, its
+  program, its sign-in folder, how to sign in again, and on Windows its
+  grants with **Grant folders** and **Revoke folders**.
+  `settings_add_connection` still refuses the kind, now naming the new Add. The desktop policy table grows to 70
+  commands, and the `settings` capability allows the three. Tests cover the
+  desktop service with a scripted prompt that records each sign-in and an
+  empty program file (adding a program found on the search path, skipping
+  one in a workspace and one in a folder below it, with one confirmation, a new empty folder, and on
+  Windows four active grants and one recorded sign-in with its environment,
+  revoked again; the file dialog when nothing is found; a cancelled dialog,
+  a declined confirmation, and core's refusals, which record nothing and
+  leave no folder; on Windows, Add refused without a relay and a sign-in
+  that does not start naming the terminal command; a session's
+  choice, dialog, label, aliases, and efforts; a declined choice; the global
+  refusal; a removed connection going stale; a connection added again under
+  the same name going stale until it is chosen again; a revocation with nothing
+  granted; a turn refused without a relay; on Windows, the grant's refusal
+  without a relay, its four-folder confirmation, and a turn refused for a
+  missing grant; elsewhere, the grant's platform refusal), the revocation
+  error text, the session record's `profile_id` shape, the add
+  confirmation, the sign-in environment built from nothing, the terminal
+  command's quoting, the new folder's removal, the uncertain add's message,
+  core's program search order, its bound that keeps the installer's
+  folders, and discovery skipping storage, the root, a workspace, and a
+  folder below one, the console start on Windows of a fixture that waits
+  for a release sent only after the start returned,
+  core's effort list, the policy and layer tests, and the
+  windows against a fake transport and the mock backend. `claude auth
+  status --json` of `claude` 2.1.325 with the sign-in's environment and a
+  new folder reported that folder and not signed in. No Claude sign-in was
+  completed through OMGCode, no desktop turn of the real or the fake
+  `claude` ran, and the Linux desktop turn, which needs a delegated cgroup
+  v2, is not verified.
 - Version 0.73.0 adds **Allow host** to a web fetch review in the desktop
   approvals window and raises each workspace's host allowlist from 32 to 100
   patterns (ADR-0110, amending ADR-0098). It is a minor version because the

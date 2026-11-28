@@ -85,8 +85,8 @@ suite(
     });
 
     it("reads every settings-window command from the settings client", () => {
-      // 33 in `settings`, as `policy.rs` and the guide count them.
-      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(33);
+      // 36 in `settings`, as `policy.rs` and the guide count them.
+      expect(SETTINGS_WINDOW_COMMANDS).toHaveLength(36);
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_overview");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_discover_toolchains");
       expect(SETTINGS_WINDOW_COMMANDS).toContain("settings_add_discovered_profiles");

@@ -88,6 +88,7 @@ fn environment_service(data: &Path, endpoint: &str) -> DesktopService {
         endpoint: endpoint.to_owned(),
         token_source: TokenSource::Environment,
         stream: false,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("open desktop service")
 }

@@ -153,10 +153,12 @@ read and list tool turns were observed to finish, and other plan usage is
 unverified
 ([ADR-0097](docs/adr/0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md)).
 A `claude_code` profile drives the operator's own signed-in, unmodified
-`claude` CLI, from the trusted CLI's `chat` and `session compact` only:
-OMGCode offers no Claude sign-in and never reads, stores, or passes the
-Claude credential. On Windows the process runs in the connection's own
-AppContainer with grants recorded by `workspace claude-code-grant`; its
+`claude` CLI, from the trusted CLI's `chat` and `session compact` and as a
+desktop session's own provider choice, never the default connection:
+OMGCode has no Claude sign-in of its own and never reads, stores, or passes
+the Claude credential. On Windows the process runs in the connection's own
+AppContainer with grants recorded by `workspace claude-code-grant` or the
+`settings` window; its
 environment is built from nothing; its built-in tools, settings, plugins,
 and skills are switched off and its init report is checked; and OMGCode's
 tools reach it only through a relayed MCP stdio server over a per-turn pipe,
@@ -164,6 +166,21 @@ through the same runtime checks. Revoking its grants or removing it ends
 its running turns before the command reports success. It is personal use,
 not evidence of Anthropic approval, and was tested with a fake `claude` only
 ([ADR-0109](docs/adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
+The `settings` window adds one by finding `claude` on `PATH` or in the
+native installer's folder, never inside application storage, the
+development root, or a workspace, or through a native file dialog when
+none is there, creating the connection's own empty sign-in folder, and one native
+confirmation that names them; on Windows the same Add grants its folders and
+then starts Claude's own `claude auth login` for that new folder in a
+console window outside the sandbox, and the window grants and revokes its
+folders again later. A session records the label `claude-code:<profile>` and the
+profile's identifier, which every turn re-checks, so a connection added again
+under the same name needs the session's confirmation again; a desktop turn uses the `omgcode` executable beside the
+desktop application as its relay and starts nothing without one. The model
+box offers `sonnet`, `opus`, `haiku`, `fable`, `sonnet[1m]`, and `opus[1m]`,
+and the **Effort** box `low` to `max`. Shutdown waits up to 30 seconds while
+such a turn runs, and no desktop turn of the real `claude` was observed
+([ADR-0111](docs/adr/0111-choose-and-chat-through-a-claude-code-connection-in-the-desktop.md)).
 No native provider API or other login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
@@ -271,7 +288,8 @@ container the folders they need that this account can change; discovery
 itself grants nothing
 ([ADR-0103](docs/adr/0103-generate-toolchain-profiles-from-installed-toolchains.md), ADR-0107).
 Other credentials, apart from ChatGPT sign-in and sign-out, still change, and packages are fetched and programs run,
-only through the trusted CLI. The desktop shell has no working terminal, diff
+apart from a Claude Code turn's `claude` and the sign-in a Claude Code Add
+starts, only through the trusted CLI. The desktop shell has no working terminal, diff
 view, installer, or recovery interface. CI publishes unsigned archives of the newest tested merge to
 `main` under the rolling `latest` tag ([ADR-0052](docs/adr/0052-publish-rolling-testing-builds-from-main.md)). Most other planned features are not
 implemented.

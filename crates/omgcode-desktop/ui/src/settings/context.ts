@@ -2,6 +2,7 @@ import type {
   ChatBudgets,
   NewConnectionKind,
   PermissionFlags,
+  ProviderKind,
   SettingsOverview,
   ToolchainDiscovery,
   ToolchainProposalView,
@@ -47,6 +48,12 @@ export interface Actions {
   /** Replaces a hosted profile's stored API key. */
   setApiKey(name: string, apiKey: string): Change;
   removeConnection(name: string): Change;
+  /** Records a Claude Code connection; Rust chooses its program and folder natively. */
+  addClaudeCode(name: string): Change;
+  /** Grants a Claude Code connection's sandbox its folders (Windows). */
+  grantClaudeCode(name: string): Change;
+  /** Revokes a Claude Code connection's folder grants. */
+  revokeClaudeCode(name: string): Change;
   /**
    * Signs a connection in with ChatGPT, recording an `openai` subscription profile with this name
    * when none exists (ADR-0093). Rust confirms natively and opens the browser.
@@ -156,7 +163,7 @@ export interface ChatDraft {
 
 /** The add-connection form's values. It never holds an API key: that stays in its input. */
 export interface ConnectionDraft {
-  kind: NewConnectionKind;
+  kind: ProviderKind;
   name: string;
   endpoint: string;
 }

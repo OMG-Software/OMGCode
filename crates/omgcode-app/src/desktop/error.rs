@@ -214,6 +214,17 @@ impl DesktopError {
 
     /// The operator closed a folder dialog or declined a confirmation. Nothing
     /// changed.
+    /// A settings change refused or stopped for a reason `message` states.
+    pub(crate) fn control_message(message: String) -> Self {
+        Self::new("control", message)
+    }
+
+    /// A Claude Code add whose journal write failed, so the connection may
+    /// be recorded and its sign-in folder was kept (ADR-0111).
+    pub(crate) fn claude_code_add_uncertain(message: String) -> Self {
+        Self::new("connection_uncertain", message)
+    }
+
     pub(crate) fn cancelled() -> Self {
         Self::new("cancelled", "No change was made.")
     }

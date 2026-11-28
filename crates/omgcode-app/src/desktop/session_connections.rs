@@ -4,7 +4,9 @@
 //! session identifier to the provider the operator chose for that session, the
 //! model chosen for it, and the reasoning effort chosen for it (ADR-0102). It
 //! holds no secret, no credential, and no permission: a profile name, the
-//! endpoint the operator confirmed, a model name, and an effort name.
+//! endpoint the operator confirmed, for a Claude Code connection the profile
+//! identifier the operator confirmed (ADR-0111), a model name, and an effort
+//! name.
 //!
 //! # Trust
 //!
@@ -16,8 +18,9 @@
 //! The edit cannot widen what a turn reaches, because every turn resolves the
 //! session's profile through core again and refuses the turn with
 //! `session_connection_stale` unless the profile is still selectable and its
-//! endpoint still equals the recorded one. An edit can therefore only choose a
-//! profile that is already recorded and selectable.
+//! endpoint still equals the recorded one, and a Claude Code connection is
+//! still the profile with the recorded identifier. An edit can therefore only
+//! choose a profile that is already recorded and selectable.
 //!
 //! # Storage contract
 //!
@@ -46,7 +49,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use omgcode_core::control::{ControlStore, ProviderKind};
+use omgcode_core::control::{
+    ClaudeCodePaths, ControlError, ControlStore, ProviderKind, ProviderProfileStatus,
+};
+use omgcode_core::provider::claude_code::CLAUDE_CODE_EFFORTS;
 use omgcode_core::provider::{ModelEndpoint, ReasoningEffort};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -55,7 +61,8 @@ use super::Inner;
 use super::error::DesktopError;
 use super::preferences::MAX_MODEL_BYTES;
 use crate::{
-    ConnectionSource, LocalConnection, ProfileCheckError, profile_selectability,
+    AppError, CLAUDE_CODE_ENDPOINT_PREFIX, ConnectionSource, ErrorKind, LocalConnection,
+    ProfileCheckError, claude_code_endpoint, profile_selectability, resolve_claude_code,
     resolve_local_connection, resolve_profile_connection,
 };
 
@@ -93,6 +100,14 @@ pub(super) enum ChosenConnection {
         /// The endpoint shown in the confirmation. A turn is refused when the
         /// profile's endpoint is no longer this one.
         endpoint: String,
+        /// For a Claude Code connection, the identifier core gave the profile
+        /// whose program and sign-in folder the confirmation named
+        /// (ADR-0111). Its label holds only the name, so a connection removed
+        /// and added again under the same name is another profile and needs
+        /// the session's confirmation again. Omitted for other profiles, so
+        /// their records keep the shape earlier builds read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_id: Option<Uuid>,
     },
 }
 
@@ -114,13 +129,22 @@ pub(super) struct SessionRecord {
 /// The reasoning efforts a request to `endpoint` may carry (ADR-0102): every
 /// documented value, or none when the endpoint takes no effort or is not a
 /// valid endpoint. The server still decides which values its model accepts.
+/// A Claude Code label takes the efforts `claude --effort` takes (ADR-0111).
 pub(super) fn reasoning_efforts(endpoint: &str) -> Vec<ReasoningEffort> {
-    if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.takes_reasoning_effort()) {
+    if endpoint.starts_with(CLAUDE_CODE_ENDPOINT_PREFIX) {
+        CLAUDE_CODE_EFFORTS.to_vec()
+    } else if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.takes_reasoning_effort()) {
         ReasoningEffort::ALL.to_vec()
     } else {
         Vec::new()
     }
 }
+
+/// The model aliases the model box offers for a Claude Code connection
+/// (ADR-0111). `claude` has no model-list request; the program decides what
+/// the signed-in account may use.
+pub(super) const CLAUDE_CODE_MODELS: [&str; 6] =
+    ["sonnet", "opus", "haiku", "fable", "sonnet[1m]", "opus[1m]"];
 
 /// Every recorded choice, by session.
 pub(super) type Records = BTreeMap<Uuid, SessionRecord>;
@@ -163,7 +187,7 @@ fn check(records: &Records) -> Result<(), &'static str> {
         let texts: [&str; 2] = match &record.connection {
             ChosenConnection::Follow {} => ["", ""],
             ChosenConnection::Default { endpoint } => [endpoint, ""],
-            ChosenConnection::Profile { name, endpoint } => [name, endpoint],
+            ChosenConnection::Profile { name, endpoint, .. } => [name, endpoint],
         };
         if texts
             .iter()
@@ -399,6 +423,20 @@ pub(super) struct SessionConnection {
     pub(super) connection: LocalConnection,
     /// The profile kind, or `None` for the launch or default endpoint.
     pub(super) kind: Option<ProviderKind>,
+    /// The Claude Code connection the session chose (ADR-0111). Its
+    /// `connection` holds the label and no token; the turn resolves the
+    /// connection's paths through core.
+    pub(super) claude_code: Option<ClaudeCodeChoice>,
+}
+
+/// A session's Claude Code connection: the profile name and the identifier of
+/// the profile the session confirmed (ADR-0111).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ClaudeCodeChoice {
+    /// The profile name.
+    pub(super) name: String,
+    /// The identifier core gave the confirmed profile.
+    pub(super) profile_id: Uuid,
 }
 
 impl Inner {
@@ -454,6 +492,7 @@ impl Inner {
             return Ok(SessionConnection {
                 connection,
                 kind: None,
+                claude_code: None,
             });
         }
         let (records, _) = self.session_records();
@@ -473,11 +512,14 @@ impl Inner {
                 Ok(SessionConnection {
                     connection,
                     kind: None,
+                    claude_code: None,
                 })
             }
-            Some(ChosenConnection::Profile { name, endpoint }) => {
-                self.resolve_recorded_profile(name, endpoint)
-            }
+            Some(ChosenConnection::Profile {
+                name,
+                endpoint,
+                profile_id,
+            }) => self.resolve_recorded_profile(name, endpoint, *profile_id),
         }
     }
 
@@ -489,7 +531,11 @@ impl Inner {
             .token
             .resolve_with_kind(&self.data_root, &self.endpoint)
             .map_err(|error| DesktopError::from_app(&error))?;
-        Ok(SessionConnection { connection, kind })
+        Ok(SessionConnection {
+            connection,
+            kind,
+            claude_code: None,
+        })
     }
 
     /// Re-resolve a session's recorded profile and compare its endpoint.
@@ -497,7 +543,16 @@ impl Inner {
         &self,
         name: &str,
         recorded: &str,
+        profile_id: Option<Uuid>,
     ) -> Result<SessionConnection, DesktopError> {
+        if recorded.starts_with(CLAUDE_CODE_ENDPOINT_PREFIX) {
+            return self.resolve_recorded_claude_code(name, recorded, profile_id);
+        }
+        // Only a Claude Code choice records an identifier; another record
+        // with one was not written by this build.
+        if profile_id.is_some() {
+            return Err(DesktopError::session_connection_stale());
+        }
         match profile_selectability(&self.data_root, name) {
             Ok(()) => {}
             Err(ProfileCheckError::NotSelectable(_)) => {
@@ -519,7 +574,73 @@ impl Inner {
                 plan: resolved.plan,
             },
             kind: Some(resolved.kind),
+            claude_code: None,
         })
+    }
+
+    /// The checked paths of the Claude Code connection `name` for one turn
+    /// (ADR-0111), with this process's relay. Core checks the program, the
+    /// folders, and on Windows every grant; nothing starts here.
+    ///
+    /// # Errors
+    ///
+    /// `credential` with `claude_code_unusable` when there is no relay or
+    /// core refuses the connection, `session_connection_stale` when the
+    /// name is no longer a Claude Code connection or names another profile
+    /// than the one the session confirmed, and the settings store's
+    /// `credential` errors.
+    pub(super) fn claude_code_paths(
+        &self,
+        choice: &ClaudeCodeChoice,
+    ) -> Result<ClaudeCodePaths, DesktopError> {
+        let relay = self.claude_code.relay.as_deref().ok_or_else(|| {
+            DesktopError::from_app(&AppError::new(
+                ErrorKind::Credential,
+                "claude_code_unusable: no omgcode executable was found beside the desktop application to serve as the MCP relay",
+            ))
+        })?;
+        let paths = resolve_claude_code(&self.data_root, &choice.name, relay)
+            .map_err(|error| DesktopError::from_app(&error))?
+            .ok_or_else(DesktopError::session_connection_stale)?;
+        // The session's choice was checked in an earlier hold of the store,
+        // so the profile core resolved now must be the same one: a profile
+        // removed and added again in between is refused.
+        if paths.profile_id != choice.profile_id {
+            return Err(DesktopError::session_connection_stale());
+        }
+        Ok(paths)
+    }
+
+    /// A session's recorded Claude Code connection (ADR-0111): the profile
+    /// must still be the Claude Code connection with the recorded label and
+    /// identifier. Its program, folders, and grants are checked when the turn
+    /// resolves its paths, before any process starts.
+    fn resolve_recorded_claude_code(
+        &self,
+        name: &str,
+        recorded: &str,
+        profile_id: Option<Uuid>,
+    ) -> Result<SessionConnection, DesktopError> {
+        let store = self.open_control()?;
+        let holds = store
+            .as_ref()
+            .is_some_and(|store| recorded_choice_holds(store, name, recorded, profile_id));
+        drop(store);
+        match profile_id {
+            Some(profile_id) if holds => Ok(SessionConnection {
+                connection: LocalConnection {
+                    endpoint: recorded.to_owned(),
+                    token: None,
+                    plan: None,
+                },
+                kind: Some(ProviderKind::ClaudeCode),
+                claude_code: Some(ClaudeCodeChoice {
+                    name: name.to_owned(),
+                    profile_id,
+                }),
+            }),
+            _ => Err(DesktopError::session_connection_stale()),
+        }
     }
 }
 
@@ -531,6 +652,57 @@ pub(super) fn recorded_endpoint(store: &ControlStore, name: &str) -> Option<Stri
     ModelEndpoint::parse(endpoint.as_str())
         .ok()
         .map(|parsed| parsed.as_str().to_owned())
+}
+
+/// The profile `name` and the endpoint text a session records for it, when a
+/// session may choose it now (ADR-0071, ADR-0111): a profile core lets be
+/// the active connection, with [`recorded_endpoint`], or a recorded Claude
+/// Code connection, with its label. Only a session can choose a Claude Code
+/// connection; core still refuses it as the active one.
+///
+/// # Errors
+///
+/// Core's `UnknownProvider` or `ProviderRefused`, and `ProviderRefused` for
+/// an endpoint the shared rule no longer accepts.
+pub(super) fn session_choice<'store>(
+    store: &'store ControlStore,
+    name: &str,
+) -> Result<(&'store ProviderProfileStatus, String), ControlError> {
+    let status = store
+        .provider_profile(name)
+        .ok_or(ControlError::UnknownProvider)?;
+    if status.profile().kind() == ProviderKind::ClaudeCode {
+        return Ok((status, claude_code_endpoint(status.profile().name())));
+    }
+    let status = store.check_provider_selectable(name)?;
+    let endpoint = recorded_endpoint(store, name).ok_or(ControlError::ProviderRefused(
+        "the recorded endpoint cannot be used",
+    ))?;
+    Ok((status, endpoint))
+}
+
+/// The profile identifier a session's record binds for `status`: a Claude
+/// Code connection's own identifier, and `None` for every other kind
+/// (ADR-0111). Core gives each added profile a new identifier and no
+/// profile's program or folder can be edited, so the identifier names the
+/// program and sign-in folder the operator confirmed.
+pub(super) fn bound_profile_id(status: &ProviderProfileStatus) -> Option<Uuid> {
+    (status.profile().kind() == ProviderKind::ClaudeCode).then(|| status.profile().id())
+}
+
+/// Whether a session's recorded profile choice still holds: a session may
+/// choose `name` now, with the recorded endpoint text and, for a Claude
+/// Code connection, the recorded identifier (ADR-0071, ADR-0111). Status,
+/// reselection, and every turn use this one rule.
+pub(super) fn recorded_choice_holds(
+    store: &ControlStore,
+    name: &str,
+    endpoint: &str,
+    profile_id: Option<Uuid>,
+) -> bool {
+    session_choice(store, name).is_ok_and(|(status, current)| {
+        current == endpoint && bound_profile_id(status) == profile_id
+    })
 }
 
 #[cfg(test)]
@@ -554,6 +726,7 @@ mod tests {
             connection: ChosenConnection::Profile {
                 name: "cloud".to_owned(),
                 endpoint: "https://ollama.com/v1".to_owned(),
+                profile_id: None,
             },
             model: model.to_owned(),
             reasoning_effort: None,
@@ -586,6 +759,33 @@ mod tests {
         assert_eq!(load(&root), Ok(None));
         save(&root, &records).expect("save");
         assert_eq!(load(&root), Ok(Some(records)));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn only_a_claude_code_choice_records_its_profile_identifier() {
+        // ADR-0111: the identifier binds a Claude Code choice to the profile
+        // the operator confirmed; every other record keeps the shape earlier
+        // builds read.
+        let root = scratch("profile-id");
+        let mut records = Records::new();
+        records.insert(Uuid::from_u128(1), profile_record("m"));
+        records.insert(
+            Uuid::from_u128(2),
+            SessionRecord {
+                connection: ChosenConnection::Profile {
+                    name: "claude".to_owned(),
+                    endpoint: "claude-code:claude".to_owned(),
+                    profile_id: Some(Uuid::from_u128(9)),
+                },
+                model: "sonnet".to_owned(),
+                reasoning_effort: None,
+            },
+        );
+        save(&root, &records).expect("save");
+        let text = fs::read_to_string(file_path(&root)).expect("read");
+        assert_eq!(text.matches("profile_id").count(), 1, "{text}");
+        assert_eq!(load(&root).expect("load").expect("records"), records);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

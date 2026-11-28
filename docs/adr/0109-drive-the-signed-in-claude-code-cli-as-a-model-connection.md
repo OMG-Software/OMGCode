@@ -354,7 +354,11 @@ Haiku request with one tool call.
     `session compact --provider-profile` resolve a `claude_code` profile.
     Every other route that resolves a connection, including the desktop
     shell, the active selection, and `models`, refuses it with
-    `claude_code_cli_only`.
+    `claude_code_cli_only`. Amended by
+    [ADR-0111](0111-choose-and-chat-through-a-claude-code-connection-in-the-desktop.md):
+    a desktop session can choose the connection, and the desktop's
+    `settings` window adds, grants, and revokes it. The active selection,
+    the desktop's launch profile, and `models` still refuse it.
 11. **Terms and readiness.** The connection is personal use of the
     operator's own sign-in to the unmodified binary. OMGCode offers no
     Claude.ai sign-in and stores, reads, and brokers no Claude credential.

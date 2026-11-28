@@ -143,6 +143,12 @@ merged to `main` at the time of writing):
   offers **Allow host**, which approves the fetch and adds its exact host to
   the workspace's allowed web hosts after a native confirmation, and a
   workspace may list 100 hosts instead of 32. See [Approvals](#approvals).
+- Since version 0.74.0 (ADR-0111), a session can choose a Claude Code
+  connection in the model box, and its turns run the operator's signed-in
+  `claude` program as the trusted CLI does. The `settings` window adds one
+  through native dialogs and, on Windows, grants and revokes its folders. It
+  is never the default connection. See
+  [Choosing the model connection](#choosing-the-model-connection).
 
 Not implemented:
 
@@ -174,7 +180,9 @@ Not implemented:
 - A recovery interface for damaged journals or an incomplete tail.
 - A provider API other than OpenAI-compatible Chat Completions and the
   ChatGPT plan's Responses route (ADR-0093), such as Anthropic's native
-  Messages API, and any subscription sign-in other than ChatGPT. Stored API keys
+  Messages API, and any subscription sign-in other than ChatGPT. A Claude
+  Code connection drives the operator's own signed-in `claude` program, not
+  an API, and OMGCode never signs it in (ADR-0109, ADR-0111). Stored API keys
   are used only for an LM Studio server's token and a hosted connection's key.
   The `main` window shows nothing about the credential source beyond the
   endpoint text and the hosted label. A model the server does not list, such
@@ -304,7 +312,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 67 commands (31 in `main`, 3 in `approvals`, and 33 in `settings`). No other command exists.
+The shell has three webview windows and 70 commands (31 in `main`, 3 in `approvals`, and 36 in `settings`). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -330,7 +338,7 @@ their registered identifier, and approvals by identifier.
 | `session_web_audit` | main | List a session's `web_fetch` calls and every model action marked `after_web_content`, newest first, at most 100, read-only (ADR-0098) |
 | `workspace_git_status` | main | Report the Git branch and a bounded list of changed paths for a session's registered workspace, read in process by `gix` with no program run (ADR-0085); takes the session id |
 | `connection_status` | main | Return a session's connection, where it comes from, its model, its reasoning effort and the efforts its connection takes, and the connections that may be chosen; takes the session id or `null` |
-| `connection_select` | main | Request the default or a recorded profile as one session's provider; Rust shows a native confirmation |
+| `connection_select` | main | Request the default or a recorded profile, a Claude Code connection included (ADR-0111), as one session's provider; Rust shows a native confirmation |
 | `session_model_select` | main | Record the model chosen for one session; no dialog |
 | `session_effort_select` | main | Record the reasoning effort chosen for one session, or no effort (Default) for `null`; no dialog; an effort the session's connection does not take is refused; `null` is accepted on any connection (ADR-0102) |
 | `chat_send` | main | Start one chat turn on a supervised thread |
@@ -359,6 +367,9 @@ their registered identifier, and approvals by identifier.
 | `settings_add_connection` | settings | Record an `lm_studio` or `ollama_local` profile with a loopback endpoint and no credential, a named hosted profile with its fixed endpoint and a write-only API key, or an `openai_compatible` profile with a typed HTTPS endpoint and a write-only API key (ADR-0092) |
 | `settings_set_api_key` | settings | Replace the stored API key of a hosted `api_key` profile; the key is write-only and no dialog is shown |
 | `settings_remove_connection` | settings | Remove a provider profile; one with a stored API key, or the active one, needs a native confirmation, and the key is deleted with the profile; a removed Claude Code connection's running turns end first, within 30 seconds (ADR-0109) |
+| `settings_add_claude_code` | settings | Add a Claude Code connection by name: Rust finds the `claude` program, or opens a native file dialog when none is found, creates a new empty sign-in folder, core checks both, a native confirmation names them, and on Windows core grants the four folders and Claude's own sign-in starts in a console window (ADR-0111) |
+| `settings_grant_claude_code` | settings | Windows only. Grant a Claude Code connection's AppContainer its program, sign-in, runtime, and relay folders after a native confirmation that names all four (ADR-0111) |
+| `settings_revoke_claude_code` | settings | Revoke every grant of a Claude Code connection and delete its AppContainer profile after a native confirmation; its running turns end first, within 30 seconds (ADR-0111) |
 | `settings_sign_in_chatgpt` | settings | After a native confirmation, sign a connection in with ChatGPT, recording an `openai` subscription profile first when the name has none; Rust opens the browser and waits at most five minutes (ADR-0093) |
 | `settings_cancel_chatgpt_sign_in` | settings | End the running ChatGPT sign-in's or sign-out's wait; takes nothing and grants nothing |
 | `settings_sign_out_chatgpt` | settings | After a native confirmation, revoke a ChatGPT session once, record the sign-out, and delete its tokens; reports whether OpenAI confirmed the revocation |
@@ -910,7 +921,11 @@ untouched controls take the returned values.
   session: the model box's **Provider** dropdown is disabled and shows "Set
   at launch", and the model is still chosen from that connection's list. `chat_send` keeps
   sending the endpoint of the shared connection and the model the model box shows; Send is disabled without a model
-  and while the session's provider is being read or has gone stale.
+  and while the session's provider is being read or has gone stale. A
+  recorded Claude Code connection is listed as Claude Code; the session's
+  endpoint is then its label `claude-code:<profile>`, and its model list is
+  the fixed aliases `sonnet`, `opus`, `haiku`, `fable`, `sonnet[1m]`, and
+  `opus[1m]`, because `claude` has no list request (ADR-0111).
 - **Reasoning effort per session** (ADR-0102). Under **Model**, the
   **Effort** dropdown offers "Default", which sends no effort field, and the
   efforts `connection_status` reports in `reasoning_efforts`: None, Minimal,
@@ -921,7 +936,9 @@ untouched controls take the returned values.
   Machines Lab endpoints take none, and there the dropdown is disabled with
   the note "This connection does not take an effort setting." The endpoint
   decides, not the kind: an `openai_compatible` address typed as exactly one
-  of the fixed endpoints takes that endpoint's rule. Choosing an
+  of the fixed endpoints takes that endpoint's rule. A Claude Code
+  connection takes Low, Medium, High, Extra high, and Max, the values
+  `claude --effort` takes (ADR-0111). Choosing an
   effort calls `session_effort_select`, which shows no dialog and shares the
   model choice's serialized writes. A provider choice clears the effort with
   the model; a model choice keeps it. It is disabled with the other dropdowns
@@ -1074,7 +1091,8 @@ untouched controls take the returned values.
 - **Archived or open sessions.** A chat request for an archived session fails
   with `archived`, and for a session with an open turn with `turn_open`.
 - **Exit.** Closing `main` asks every running turn to cancel and waits up to
-  five seconds. A turn waiting on a model or compaction request ends within
+  five seconds, or up to 30 seconds while a Claude Code turn runs, so its
+  cancel can stop the `claude` process tree and observe its end (ADR-0111). A turn waiting on a model or compaction request ends within
   that period and leaves no open turn. A turn in a step that cannot be
   interrupted, a read, list, or edit tool call, is abandoned if it is still
   running when the period ends. Its journal keeps an open turn. The tree shows
@@ -1690,6 +1708,24 @@ settings are read again, and a profile removed or given another endpoint while
 the dialog was open records nothing (`stale_revision`). Only then is the
 choice recorded with the endpoint that was confirmed, and the session's model
 is cleared. It does not change the global default or the settings revision.
+A Claude Code connection (ADR-0111) is offered to a session only. Its dialog
+asks "Send this session's chat turns through the Claude Code connection
+`<name>`?", names the `claude` program and the sign-in folder, and says that
+each turn's messages, instructions, selected skills, and tool results go to
+that program and through it to Anthropic. The record keeps the label
+`claude-code:<profile>` and the profile's identifier as an optional
+`profile_id`, which no other choice writes. Every turn reads the settings
+store again: a profile that is gone, is no longer a Claude Code connection,
+has another label, or is another profile added under the same name refuses
+the turn with `session_connection_stale`. The status shows such a choice as
+stale, and choosing the connection again is a change that is confirmed. Core's `resolve_claude_code`
+then checks the recorded program, the sign-in folder and its overlap rules,
+and on Windows every grant, with the `omgcode` executable beside the desktop
+executable as the relay. A missing relay or any refusal there fails the turn
+with the code `credential` and a message that starts `claude_code_unusable`,
+before any process starts, and a resolved profile with another identifier
+than the session's is refused as stale. The turn then runs the clients the CLI builds for
+the connection, and an approval waits in the turn as for any provider.
 `session_model_select` records a model for a session with no dialog; it
 applies the rule `chat_send` applies (at most 256 bytes, no control
 character; an empty id clears the choice). A session with no record gets one
@@ -1708,7 +1744,7 @@ an optional `reasoning_effort`, omitted when none is chosen, so
 `session-connections.json` keeps version 1. `connection_select` clears it.
 The `settings` window's `settings_select_connection` keeps choosing the
 **global default**, which sessions without their own choice follow; it uses
-the same checks and dialog. The `settings` connection commands call
+the same checks and dialog, and refuses a Claude Code connection. The `settings` connection commands call
 the same `ControlStore` functions as the
 CLI's `workspace provider-profile-select`, `provider-profile-add`,
 `provider-credential-set`, and `provider-profile-remove`, with the same
@@ -1739,11 +1775,11 @@ revision check and validation (ADR-0064, ADR-0071).
   A request that gives a local kind a key, gives a named hosted kind an
   endpoint, or omits the field its kind needs is refused as
   `invalid_request` before anything is recorded. A `claude_code` kind is
-  refused the same way before its key is read: only the trusted CLI records
-  that connection (ADR-0109). The window names a recorded one **Claude
-  Code**, marks it **CLI only** with no key field or hosted notice, never
-  offers the kind in its add dropdown, and can remove it. A new profile is
-  not used until it is selected.
+  refused the same way before its key is read: `settings_add_claude_code`
+  records that connection (ADR-0111). The window names a recorded one
+  **Claude Code**, marks it **Per session** with no key field or hosted
+  notice, shows its program and sign-in folder, and can remove it. A new
+  profile is not used until it is selected.
 - **The API key is write-only** (ADR-0059 decision 6, ADR-0071 decision 5).
   The key is typed into a password field, sent once in `settings_add_connection` or
   `settings_set_api_key`, and the field is emptied as the button is pressed,
@@ -1817,6 +1853,59 @@ revision check and validation (ADR-0064, ADR-0071).
   reported as `credential_orphaned` with that item's identifier. A session that chose the removed profile
   refuses its next turn with `session_connection_stale` until the provider is
   chosen again.
+- **Adding, granting, and revoking a Claude Code connection** (ADR-0111). The
+  add dropdown lists Claude Code last; for it the form hides the endpoint and
+  key fields and says what Add does. **Add connection** sends
+  `settings_add_claude_code` with the revision and the name only. On Windows
+  Rust first refuses it with `invalid_request` when no `omgcode` executable
+  sits beside the desktop application. Rust takes the first `claude`
+  (`claude.exe` on Windows) in the absolute folders of the operator's
+  `PATH`, at most 128, then in the native installer's `~/.local/bin` (and
+  `~/.claude/local` outside Windows), that core accepts. It skips one whose
+  folder is, or lies inside, application storage, the development root, or
+  a workspace, where a model could have written it, through core's
+  `claude_code_program_discoverable`. It opens a native file dialog only
+  when no other file exists, and reports core's first refusal when files
+  exist but each is refused. It creates a new, empty
+  sign-in folder with a random name under `omgcode-claude-code` in the
+  per-user local data folder. Core applies every check of `omgcode
+  workspace claude-code-add` before the operator is asked: a regular program
+  file, a sign-in folder that does not overlap application storage, the
+  development root, or a workspace, and a valid, unused name. A cancelled or
+  refused add records nothing and removes the folder. One native
+  confirmation names the program, the folder, and on Windows the four
+  folders to grant; core records the connection at the revision the window
+  read and, on Windows, grants them. On Windows the shell then starts
+  Claude's own `claude auth login` in a console window of its own, outside
+  the sandbox, with no inherited handle, the folder as its working folder
+  and `CLAUDE_CONFIG_DIR`, and an environment built from nothing
+  (`SystemRoot`, `windir`, `SystemDrive`, `USERPROFILE`, `APPDATA`,
+  `LOCALAPPDATA`, `TEMP`, `TMP`, a `PATH` of the system folders, `ComSpec`,
+  `PATHEXT`, `CLAUDE_CODE_SAFE_MODE`, `DISABLE_AUTOUPDATER`, and
+  `DISABLE_TELEMETRY`). The operator finishes the sign-in in the browser;
+  OMGCode waits for nothing and does not read the folder's files. Elsewhere
+  the confirmation names the terminal command instead. A failed grant or a
+  sign-in that does not start fails the command with `control` after the
+  connection was recorded, and the message names the terminal command. A
+  failed write of the settings journal fails it with `connection_uncertain`:
+  the connection may be recorded, so the folder is kept, and the message
+  names the folder and the terminal command; the window then reads the
+  settings again. The sign-in starts only for the folder Add just created,
+  so on Windows the row says that signing in again is revoking, removing,
+  and adding the connection again, and elsewhere removing and adding it and
+  running the command its confirmation shows.
+  On Windows the row lists the connection's grants and offers **Grant
+  folders**, which sends `settings_grant_claude_code` to grant them again
+  after a revocation. Rust refuses it with `invalid_request` when no
+  `omgcode` executable sits beside the desktop application, then shows one
+  confirmation that names the program's folder, the sign-in folder, the
+  runtime folder, and the relay folder, and calls core's `grant_claude_code`.
+  **Revoke folders** sends `settings_revoke_claude_code`; after a
+  confirmation core revokes every grant and deletes the container profile,
+  and Rust waits up to 30 seconds, with the settings store released, until
+  the connection's running turns are observed ended. Outside Windows the
+  grant command is refused with `unsupported_platform` and the row shows no
+  grant buttons. Removing the connection is refused while it holds grants.
 - **Signing in with ChatGPT** (ADR-0093). The **Model** section's **Sign in
   with ChatGPT** disclosure takes a connection name (default `chatgpt`), and a
   signed-out ChatGPT row offers the same button. `settings_sign_in_chatgpt`
@@ -2315,7 +2404,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 67 |
+| Commands | 70 |
 | Git status changed paths | 1,000, and a 10-second deadline |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |
@@ -2492,6 +2581,33 @@ ACLs the private store refuses, see the notes in
   or re-added profile making the choice stale, refusals before any dialog, the
   Ollama Cloud dialog text, a hosted provider's dialog naming its host and
   flagging a typed address, model validation, and a damaged file.
+  `crates/omgcode-app/tests/desktop_claude_code.rs` covers a Claude Code
+  connection (ADR-0111) with a scripted prompt that records each sign-in
+  instead of starting it and an empty program file: adding one found on the
+  search path, skipping one in a workspace and one in a folder below it,
+  with one confirmation and a new empty folder; the file dialog when nothing is found; a cancelled dialog, a
+  declined confirmation, and core's refusals before the confirmation, which
+  record nothing and leave no folder; a session's choice, its dialog, label,
+  aliases, and efforts; a declined choice; the global selection's refusal; a
+  removed connection making the choice stale; a connection added again
+  under the same name making it stale until it is chosen and confirmed
+  again; a revocation with nothing granted; and a turn refused without a
+  relay. A unit test in `session_connections.rs` checks that only a Claude
+  Code choice writes `profile_id`. On Windows it covers an add that grants
+  four active folders and records one sign-in whose environment holds only
+  the listed variables, then revokes them; an add refused without a relay; a
+  sign-in that does not start naming the terminal command; the grant's
+  refusal without a relay, its confirmation naming four folders, and a turn
+  refused for a missing grant; elsewhere, the add's terminal command and the
+  grant's platform refusal. Unit tests in `claude_code_sign_in.rs` cover the
+  environment built from nothing, the terminal command's quoting, and the
+  new folder's removal; one in `settings_claude_code.rs` covers the
+  uncertain add's message. A platform test starts a fixture in a console
+  window of its own that waits for a release sent only after the start
+  returned. Core tests cover the program search order, its bound of 128
+  `PATH` folders before the installer's folders, and discovery skipping
+  application storage, the development root, a workspace, and a folder
+  below one. No test starts a `claude` process.
   `crates/omgcode-app/tests/desktop_cloud_connection.rs` covers adding Ollama
   Cloud with a key against the real settings and native credential stores
   (the profile, the fixed endpoint, the bound item, selectability), refusals
@@ -2620,3 +2736,10 @@ ACLs the private store refuses, see the notes in
 - Opening a very large first index can take seconds, because each journal
   commits once.
 - No installer, signing, auto-update, or crash reporting exists.
+- ADR-0111: the Claude Code connection in the desktop was checked by service
+  tests with a scripted prompt, by layer and bundle tests, and by Vitest
+  against a fake transport and the mock backend. No desktop turn of the real
+  or the fake `claude` ran, the desktop's grants were made only for
+  temporary folders, the native file dialog and the real shell's windows were not driven by
+  automation, and a Linux desktop turn, which needs a delegated cgroup v2,
+  is not verified.

@@ -89,6 +89,7 @@
 
 mod approvals;
 mod chat;
+mod claude_code_sign_in;
 mod context_breakdown;
 mod data_folder;
 mod error;
@@ -103,6 +104,7 @@ mod settings;
 mod settings_changes;
 mod settings_chat;
 mod settings_chatgpt;
+mod settings_claude_code;
 mod settings_discovery;
 mod settings_execution;
 mod settings_skills;
@@ -122,6 +124,7 @@ use omgcode_core::control::ProviderKind;
 use omgcode_core::session_index::SessionIndex;
 use uuid::Uuid;
 
+pub use self::claude_code_sign_in::{ClaudeCodeHost, ClaudeCodeSignIn, start_claude_code_sign_in};
 pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
 use self::events::EventHub;
@@ -131,7 +134,7 @@ pub use self::processes::{
     SessionProcesses,
 };
 use self::review_tokens::ReviewTokens;
-pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
+pub use self::settings_changes::{Confirmation, FilePurpose, FolderPurpose, SettingsPrompt};
 pub use self::settings_discovery::{
     DiscoveredProfilesRequest, MAX_SELECTED_PROPOSALS, ProposedRootView, ProposedVariableView,
     ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProposalView, discovery_host,
@@ -155,7 +158,8 @@ pub use self::wire::{
     ApprovalView, ApprovalsSummary, Binding, BranchState, BranchView, ChatBudgetsDto,
     ChatBudgetsSaveRequest, ChatDefaults, ChatDefaultsView, ChatEvent, ChatGptRequest,
     ChatGptSignOutResult, ChatModels, ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest,
-    ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ComposerPreferencesDto,
+    ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ClaudeCodeAddRequest,
+    ClaudeCodeConnectionRequest, ClaudeCodeGrantView, ClaudeCodeView, ComposerPreferencesDto,
     ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest, ConnectionOrigin,
     ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView, ConnectionStatus,
     ConnectionStatusRequest, ConnectionView, ContainerGrantView, ContextBreakdown, ContextMeterDto,
@@ -205,6 +209,10 @@ pub struct DesktopConfig {
     /// provisional text to the subscriber (ADR-0049). When `false`, turns send
     /// non-streaming requests and only `finished` events are pushed.
     pub stream: bool,
+    /// The relay, program search, and sign-in folder for Claude Code
+    /// connections (ADR-0111). [`ClaudeCodeHost::default`] has none, so a
+    /// Claude Code turn fails with `claude_code_unusable` and Add is refused.
+    pub claude_code: ClaudeCodeHost,
 }
 
 /// A replacement token supplier for an embedder or a test that must avoid the
@@ -315,6 +323,8 @@ struct Inner {
     token: TokenResolver,
     /// Whether turns send streamed requests ([`DesktopConfig::stream`]).
     stream: bool,
+    /// The Claude Code host ([`DesktopConfig::claude_code`]).
+    claude_code: ClaudeCodeHost,
     index: Mutex<IndexState>,
     turns: Mutex<TurnTable>,
     reviews: Mutex<ReviewTokens>,
@@ -399,6 +409,7 @@ impl DesktopService {
                 endpoint: config.endpoint,
                 token,
                 stream: config.stream,
+                claude_code: config.claude_code,
                 index: Mutex::new(IndexState::new(index)),
                 turns: Mutex::new(TurnTable::default()),
                 reviews: Mutex::new(ReviewTokens::default()),

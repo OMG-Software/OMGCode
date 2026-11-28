@@ -71,4 +71,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "settings_add_discovered_profiles",
     "settings_assign_toolchain_profile",
     "settings_unassign_toolchain_profile",
+    "settings_add_claude_code",
+    "settings_grant_claude_code",
+    "settings_revoke_claude_code",
 ];

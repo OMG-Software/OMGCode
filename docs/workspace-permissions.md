@@ -363,8 +363,8 @@ owns the rules.
 
 A `claude_code` profile (0.72.0,
 [ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md))
-is recorded with `workspace claude-code-add` instead, which `provider-profile-add`
-refuses. Its `provider_profile_added` event carries a `claude_code` field with
+is recorded with `workspace claude-code-add` or, since ADR-0111, the desktop
+`settings` window instead, which `provider-profile-add` refuses. Its `provider_profile_added` event carries a `claude_code` field with
 the program and the identities of its folder and of the sign-in folder, and no
 endpoint or credential. The connection's container grants are recorded as
 `claude_code_grant_requested`, `claude_code_grant_applied`,

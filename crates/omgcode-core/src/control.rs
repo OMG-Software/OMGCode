@@ -46,10 +46,11 @@ pub use assignment::{
     RegisteredWorkspace, Revocations, SkippedGrant, Unregistration,
 };
 pub use claude_code::{
-    CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole,
-    ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeRevokeFailure,
-    ClaudeCodeSetup, ClaudeCodeWatch, MAX_TURN_RECORDS, acknowledge_claude_code_cleanup,
-    claude_code_container, claude_code_runtime_folder, wait_for_claude_code_turns,
+    CLAUDE_CODE_PROGRAM_NAME, CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeGrant,
+    ClaudeCodeGrantRole, ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation,
+    ClaudeCodeRevokeFailure, ClaudeCodeSetup, ClaudeCodeWatch, MAX_TURN_RECORDS,
+    acknowledge_claude_code_cleanup, claude_code_container, claude_code_program_candidates,
+    claude_code_runtime_folder, wait_for_claude_code_turns,
 };
 pub(crate) use claude_code::{Recheck, TurnRecord, WatchCursor};
 pub use container::{

@@ -1094,6 +1094,55 @@ pub struct ProviderProfileView {
     /// For a ChatGPT connection that has signed in, the account's email as
     /// its ID token gave it, for display only (ADR-0093).
     pub account_label: Option<String>,
+    /// For a Claude Code connection, its program, sign-in folder, and
+    /// container grants (ADR-0111). Omitted for every other kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_code: Option<ClaudeCodeView>,
+}
+
+/// A recorded Claude Code connection's setup, for display only (ADR-0111).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ClaudeCodeView {
+    /// Display-safe text of the `claude` program.
+    pub program: String,
+    /// Display-safe text of the sign-in folder.
+    pub config_folder: String,
+    /// The connection's container grants that are not confirmed revoked.
+    /// Always empty outside Windows.
+    pub grants: Vec<ClaudeCodeGrantView>,
+}
+
+/// One grant to a Claude Code connection's container.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ClaudeCodeGrantView {
+    /// `program`, `configuration`, `runtime`, or `relay`.
+    pub role: &'static str,
+    /// Display-safe text of the granted folder.
+    pub directory: String,
+    /// `pending`, `active`, or `revoking`.
+    pub state: &'static str,
+}
+
+/// Arguments of `settings_add_claude_code` (ADR-0111). The program and the
+/// sign-in folder come from native dialogs, never from the webview.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeCodeAddRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// The new connection's name.
+    pub name: String,
+}
+
+/// Arguments of `settings_grant_claude_code` and
+/// `settings_revoke_claude_code` (ADR-0111).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ClaudeCodeConnectionRequest {
+    /// The settings revision the window last read.
+    pub revision: u64,
+    /// A recorded Claude Code connection's name.
+    pub name: String,
 }
 
 /// Arguments of `settings_sign_in_chatgpt` and `settings_sign_out_chatgpt`

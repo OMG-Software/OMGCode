@@ -1,7 +1,6 @@
 import type {
   FixedHostedKind,
   LocalProviderKind,
-  NewConnectionKind,
   ProgramProviderKind,
   ProviderKind,
 } from "./ipc/types";
@@ -32,9 +31,10 @@ export const PROVIDER_NAMES: Readonly<Record<ProviderKind, string>> = {
 
 /**
  * Every provider the settings window can add, in the order its dropdown lists them. A
- * `claude_code` connection is not one: only the trusted CLI records it (ADR-0109).
+ * `claude_code` connection is added through its own command, whose native dialogs choose the
+ * program and the sign-in folder (ADR-0111).
  */
-export const NEW_CONNECTION_KINDS: readonly NewConnectionKind[] = [
+export const NEW_CONNECTION_KINDS: readonly ProviderKind[] = [
   "ollama_local",
   "lm_studio",
   "ollama_cloud",
@@ -51,6 +51,7 @@ export const NEW_CONNECTION_KINDS: readonly NewConnectionKind[] = [
   "deepseek",
   "xai",
   "openai_compatible",
+  "claude_code",
 ];
 
 /** The provider's display name. `null` is the default connection, an LM Studio server. */

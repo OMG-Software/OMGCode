@@ -1,8 +1,9 @@
 //! Native dialogs for settings changes (ADR-0059 decisions 4 and 5, ADR-0060).
 //!
 //! [`NativePrompt`] implements the service's [`SettingsPrompt`] with the
-//! operating system's folder picker and message box through `rfd`, called from
-//! Rust only. No webview can open, answer, or read these dialogs: there is no
+//! operating system's folder and file pickers and message box through `rfd`,
+//! called from Rust only. No webview can open, answer, or read these dialogs:
+//! there is no
 //! dialog command and no `dialog:` permission, and the chosen path goes from the
 //! dialog to core without passing through any webview.
 //!
@@ -14,6 +15,12 @@
 //! COM apartment on Windows does not depend on a pooled thread's history. A
 //! dialog that cannot be shown returns no folder or no confirmation, so a
 //! failure never applies a change.
+//!
+//! After a Claude Code connection was added and confirmed, the prompt also
+//! starts Claude's own sign-in in a console window of its own through the
+//! service's `start_claude_code_sign_in` (ADR-0111). That is a program, not a
+//! dialog: it is started on Windows only, it is not waited for, and nothing
+//! it writes reaches OMGCode.
 //!
 //! Platform notes:
 //! - Windows: the folder picker is `IFileOpenDialog` and the confirmation is a
@@ -29,7 +36,10 @@
 
 use std::path::{Path, PathBuf};
 
-use omgcode_app::desktop::{Confirmation, FolderPurpose, SettingsPrompt};
+use omgcode_app::desktop::{
+    ClaudeCodeSignIn, Confirmation, FilePurpose, FolderPurpose, SettingsPrompt,
+    start_claude_code_sign_in,
+};
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use tauri::Window;
 
@@ -60,6 +70,23 @@ impl SettingsPrompt for NativePrompt {
         .flatten()
     }
 
+    fn pick_file(&self, purpose: FilePurpose, start: Option<&Path>) -> Option<PathBuf> {
+        on_dialog_thread(|| {
+            let mut dialog = FileDialog::new()
+                .set_title(purpose.title())
+                .set_parent(&self.parent);
+            // Core accepts only an `.exe` as the program on Windows.
+            if cfg!(windows) {
+                dialog = dialog.add_filter("Programs", &["exe"]);
+            }
+            if let Some(start) = start {
+                dialog = dialog.set_directory(start);
+            }
+            dialog.pick_file()
+        })
+        .flatten()
+    }
+
     fn confirm(&self, confirmation: &Confirmation) -> bool {
         on_dialog_thread(|| {
             MessageDialog::new()
@@ -71,6 +98,11 @@ impl SettingsPrompt for NativePrompt {
                 .show()
         })
         .is_some_and(|answer| is_confirmed(&answer))
+    }
+
+    /// Claude's own sign-in, in a console window of its own (ADR-0111).
+    fn start_claude_code_sign_in(&self, sign_in: &ClaudeCodeSignIn) -> Result<(), String> {
+        start_claude_code_sign_in(sign_in)
     }
 }
 

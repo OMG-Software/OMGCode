@@ -15,7 +15,7 @@ describe("provider names and endpoints (ADR-0092)", () => {
       expect(PROVIDER_NAMES[kind]).toBeTruthy();
       expect(providerName(kind)).toBe(PROVIDER_NAMES[kind]);
     }
-    expect(new Set(NEW_CONNECTION_KINDS).size).toBe(16);
+    expect(new Set(NEW_CONNECTION_KINDS).size).toBe(17);
     expect(providerName(null)).toBe("LM Studio");
     // An unknown or inherited name is shown as given, never looked up on the prototype.
     expect(providerName("toString")).toBe("toString");

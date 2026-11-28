@@ -84,6 +84,7 @@ fn service(data: &Path) -> DesktopService {
         endpoint: "http://127.0.0.1:1234/v1".to_owned(),
         token_source: TokenSource::Environment,
         stream: false,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("open desktop service")
 }

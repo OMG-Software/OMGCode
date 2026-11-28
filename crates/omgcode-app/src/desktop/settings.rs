@@ -18,7 +18,7 @@
 //! `HEAD` for display only.
 
 use omgcode_core::control::{
-    ContainerGrantAccess, ContainerGrantState, ControlStore, ProfilePlatform,
+    ContainerGrantAccess, ContainerGrantState, ControlStore, ProfilePlatform, ProviderKind,
 };
 use omgcode_core::git_head::{WorkspaceHead, workspace_head};
 use omgcode_core::git_status::{
@@ -30,17 +30,20 @@ use omgcode_core::turn::display_safe_line;
 use super::error::DesktopError;
 use super::instructions;
 use super::preferences;
-use super::session_connections::{ChosenConnection, reasoning_efforts, recorded_endpoint};
+use super::session_connections::{
+    ChosenConnection, reasoning_efforts, recorded_choice_holds, session_choice,
+};
 use super::settings_chat::{
     chat_defaults_view, global_for_room, longest_for_room, workspace_instructions_view,
 };
 use super::state::folder_of_directory;
 use super::wire::{
-    BranchState, BranchView, ConnectionChoice, ConnectionOrigin, ConnectionSourceView,
-    ConnectionStatus, ConnectionStatusRequest, ConnectionView, ContainerGrantView, GitIndexState,
-    GitPathView, GitStatusState, GitStatusView, GitWorktreeState, PackageProfileView,
-    ProviderProfileView, SessionContext, SessionRequest, SessionSkills, SettingsOverview,
-    SkillOverrideView, SkillSettingView, ToolchainProfileView, WorkspaceSettingsView,
+    BranchState, BranchView, ClaudeCodeGrantView, ClaudeCodeView, ConnectionChoice,
+    ConnectionOrigin, ConnectionSourceView, ConnectionStatus, ConnectionStatusRequest,
+    ConnectionView, ContainerGrantView, GitIndexState, GitPathView, GitStatusState, GitStatusView,
+    GitWorktreeState, PackageProfileView, ProviderProfileView, SessionContext, SessionRequest,
+    SessionSkills, SettingsOverview, SkillOverrideView, SkillSettingView, ToolchainProfileView,
+    WorkspaceSettingsView,
 };
 use super::{DesktopService, Inner, TokenResolver};
 use crate::TokenSource;
@@ -142,6 +145,7 @@ pub(super) fn overview_of(inner: &Inner, store: ControlStore) -> SettingsOvervie
                     .and(status.subscription())
                     .and_then(|registration| registration.account_label())
                     .map(display_safe_line),
+                claude_code: claude_code_view(&store, profile.name()),
             }
         })
         .collect();
@@ -403,12 +407,13 @@ impl DesktopService {
                     ConnectionOrigin::Session,
                     *endpoint != inner.endpoint,
                 ),
-                Some(ChosenConnection::Profile { name, endpoint }) => {
-                    let current = store.as_ref().and_then(|store| {
-                        store
-                            .check_provider_selectable(name)
-                            .ok()
-                            .and(recorded_endpoint(store, name))
+                Some(ChosenConnection::Profile {
+                    name,
+                    endpoint,
+                    profile_id,
+                }) => {
+                    let holds = store.as_ref().is_some_and(|store| {
+                        recorded_choice_holds(store, name, endpoint, *profile_id)
                     });
                     let kind = store
                         .as_ref()
@@ -423,7 +428,7 @@ impl DesktopService {
                             selectable: true,
                         },
                         ConnectionOrigin::Session,
-                        current.as_deref() != Some(endpoint.as_str()),
+                        !holds,
                     )
                 }
             }
@@ -434,12 +439,18 @@ impl DesktopService {
                 .iter()
                 .map(|status| status.profile())
                 .filter_map(|profile| {
-                    let endpoint = profile.endpoint()?;
-                    store.check_provider_selectable(profile.name()).ok()?;
+                    // A Claude Code connection is offered with its label; only
+                    // a session can choose it (ADR-0111).
+                    let endpoint = if profile.kind() == ProviderKind::ClaudeCode {
+                        session_choice(store, profile.name()).ok()?.1
+                    } else {
+                        store.check_provider_selectable(profile.name()).ok()?;
+                        profile.endpoint()?.as_str().to_owned()
+                    };
                     Some(ConnectionChoice {
                         name: display_safe_line(profile.name()),
                         kind: profile.kind().as_str(),
-                        endpoint: display_safe_line(endpoint.as_str()),
+                        endpoint: display_safe_line(&endpoint),
                         active: !stale
                             && connection.profile.as_deref()
                                 == Some(display_safe_line(profile.name()).as_str()),
@@ -563,6 +574,26 @@ fn git_status_view(branch: BranchView, status: WorkspaceStatus) -> GitStatusView
         paths,
         truncated,
     }
+}
+
+/// The setup and grants of the Claude Code connection `name`, or `None` for
+/// any other profile (ADR-0111).
+fn claude_code_view(store: &ControlStore, name: &str) -> Option<ClaudeCodeView> {
+    let (profile_id, setup) = store.claude_code_setup(name).ok()?;
+    Some(ClaudeCodeView {
+        program: setup.program_display(),
+        config_folder: display_safe_line(&setup.config_folder_display()),
+        grants: store
+            .claude_code_grants()
+            .iter()
+            .filter(|status| status.grant().profile_id() == profile_id)
+            .map(|status| ClaudeCodeGrantView {
+                role: status.grant().role().as_str(),
+                directory: display_safe_line(&status.grant().directory_display()),
+                state: grant_state_name(status.state()),
+            })
+            .collect(),
+    })
 }
 
 /// The connection the next turn uses. The active connection is read from

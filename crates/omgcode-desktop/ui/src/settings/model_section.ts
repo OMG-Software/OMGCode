@@ -1,7 +1,8 @@
 import { button, el } from "../dom";
 import type {
+  ClaudeCodeView,
   ConnectionView,
-  NewConnectionKind,
+  ProviderKind,
   ProviderProfileView,
   SettingsOverview,
 } from "../ipc/types";
@@ -190,11 +191,83 @@ function chatGptButton(profile: ProviderProfileView, { submit, actions }: Sectio
 }
 
 /**
- * The line under a Claude Code connection (ADR-0109). Only the trusted CLI records or uses one,
- * so this window names it and can remove it, which ends its running turns first.
+ * The line under a Claude Code connection (ADR-0109, ADR-0111). A session chooses it in the main
+ * window's provider box; it is never the default connection.
  */
 export const PROGRAM_CONNECTION_NOTE =
-  "Runs your signed-in Claude Code CLI. Only the trusted CLI can use it: omgcode chat --provider-profile with this name. Removing it ends its running turns.";
+  "Runs your signed-in Claude Code CLI. Choose it for a session in the main window's provider box; it cannot be the default connection. Removing it ends its running turns.";
+
+/** What the add form says about a Claude Code connection before Rust's checks and confirmation. */
+export const CLAUDE_CODE_ADD_NOTE =
+  "Add connection finds your claude program (claude.exe on Windows), or asks for it if it is not installed in the usual place, creates the connection's own sign-in folder, and asks you once to confirm. On Windows it also grants the connection's sandbox its folders and opens Claude's own sign-in in a new window: finish it in your browser. Elsewhere, sign in from a terminal with the command the confirmation shows. OMGCode never reads the sign-in.";
+
+/** Why a Claude Code connection on Windows has its folders granted, and how to grant them again. */
+export const CLAUDE_CODE_GRANT_NOTE =
+  "On Windows the claude program runs in its own sandbox. Add grants its folders; after revoking them, grant them again before a session uses it. The relay is the omgcode program beside this application.";
+
+/**
+ * How to sign a Claude Code connection in again on Windows. OMGCode opens Claude's sign-in only
+ * for the folder Add has just created, because the sign-in runs outside the sandbox (ADR-0111).
+ */
+export const CLAUDE_CODE_SIGN_IN_AGAIN_NOTE =
+  "To sign in again, revoke its folders, remove the connection, and add it again: OMGCode opens Claude's sign-in only for a new sign-in folder, because the sign-in runs outside the sandbox.";
+
+/**
+ * How to sign a Claude Code connection in again where no folder is granted: a new connection
+ * and folder, then the terminal command its confirmation shows (ADR-0111).
+ */
+export const CLAUDE_CODE_SIGN_IN_AGAIN_TERMINAL_NOTE =
+  "To sign in again, remove the connection, add it again, and sign in from a terminal with the command the confirmation shows. Use a new sign-in folder, because the sign-in runs outside the sandbox.";
+
+const GRANT_ROLE_NAMES: Readonly<Record<ClaudeCodeView["grants"][number]["role"], string>> = {
+  program: "Program folder",
+  configuration: "Sign-in folder",
+  runtime: "Runtime folder",
+  relay: "Relay folder",
+};
+
+/** The program, sign-in folder, and on Windows the grants and their buttons. */
+function claudeCodeDetails(
+  name: string,
+  setup: ClaudeCodeView,
+  { overview, submit, actions }: SectionContext,
+): HTMLElement[] {
+  const lines = [
+    el("div", { class: "row-meta", text: `Program: ${setup.program}` }),
+    el("div", { class: "row-meta", text: `Sign-in folder: ${setup.config_folder}` }),
+    el("div", {
+      class: "row-meta",
+      text: overview.container_grants_supported
+        ? CLAUDE_CODE_SIGN_IN_AGAIN_NOTE
+        : CLAUDE_CODE_SIGN_IN_AGAIN_TERMINAL_NOTE,
+    }),
+  ];
+  if (!overview.container_grants_supported) {
+    return lines;
+  }
+  const grants =
+    setup.grants.length === 0
+      ? [el("div", { class: "row-meta", text: "No folder is granted." })]
+      : setup.grants.map((grant) =>
+          el("div", {
+            class: "row-meta",
+            text: `${GRANT_ROLE_NAMES[grant.role]}: ${grant.directory} (${grant.state})`,
+          }),
+        );
+  return [
+    ...lines,
+    el("div", { class: "row-meta", text: CLAUDE_CODE_GRANT_NOTE }),
+    ...grants,
+    el(
+      "div",
+      { class: "row-actions" },
+      button("Grant folders", () => submit(actions.grantClaudeCode(name))),
+      setup.grants.length === 0
+        ? null
+        : button("Revoke folders", () => submit(actions.revokeClaudeCode(name))),
+    ),
+  ];
+}
 
 /** The line under a hosted profile: where prompts go, or why it cannot be used at all. */
 export const NO_ENDPOINT_NOTE =
@@ -231,7 +304,7 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
         profile.active ? el("span", { class: "chip chip-active", text: "Active" }) : null,
         hosted ? el("span", { class: "chip", text: "Hosted" }) : null,
         plan ? el("span", { class: "chip", text: "ChatGPT plan" }) : null,
-        program ? el("span", { class: "chip", text: "CLI only" }) : null,
+        program ? el("span", { class: "chip", text: "Per session" }) : null,
       ),
       el("div", {
         class: "row-meta",
@@ -240,6 +313,9 @@ function profileRow(profile: ProviderProfileView, ctx: SectionContext): HTMLElem
       el("div", { class: "row-meta", text: credentialLine(profile) }),
       hosted ? el("div", { class: "row-meta", text: hostedRowNote(profile) }) : null,
       program ? el("div", { class: "row-meta", text: PROGRAM_CONNECTION_NOTE }) : null,
+      ...(program && profile.claude_code !== undefined
+        ? claudeCodeDetails(profile.name, profile.claude_code, ctx)
+        : []),
       // A subscription profile never holds a key, and a profile without an endpoint can never
       // be used, so neither has a key field.
       hosted && profile.auth === "api_key" && profile.endpoint !== null
@@ -315,7 +391,7 @@ function labelled(label: string, id: string, control: HTMLElement): HTMLElement 
 }
 
 /** The name the form suggests for each provider, replaced only while the operator kept it. */
-const DEFAULT_NAMES: Readonly<Record<NewConnectionKind, string>> = {
+const DEFAULT_NAMES: Readonly<Record<ProviderKind, string>> = {
   ollama_local: "ollama",
   lm_studio: "lmstudio",
   ollama_cloud: "ollama-cloud",
@@ -332,6 +408,7 @@ const DEFAULT_NAMES: Readonly<Record<NewConnectionKind, string>> = {
   deepseek: "deepseek",
   xai: "grok",
   openai_compatible: "custom",
+  claude_code: "claude-code",
 };
 
 /** The add-connection form's starting values: Ollama at its usual address. */
@@ -340,7 +417,7 @@ export function newConnectionDraft(): ConnectionDraft {
 }
 
 /** How the provider dropdown names one kind; hosted ones say so. */
-function kindOption(kind: NewConnectionKind): string {
+function kindOption(kind: ProviderKind): string {
   return isHostedKind(kind) ? `${PROVIDER_NAMES[kind]} (hosted)` : PROVIDER_NAMES[kind];
 }
 
@@ -392,14 +469,18 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
     fixedText,
   );
   const hostedText = el("p", { class: "muted" });
+  const programText = el("p", { class: "muted", text: CLAUDE_CODE_ADD_NOTE });
   // Shows the fields the chosen provider takes. The endpoint field is hidden, not rebuilt, so
   // what was typed in it stays. The key field is cleared on a provider change instead: a key
   // belongs to one provider and must not be sent to another.
   const arrange = (): void => {
-    const chosen = kind.value as NewConnectionKind;
+    const chosen = kind.value as ProviderKind;
     const fixed = isFixedHostedKind(chosen) ? FIXED_ENDPOINTS[chosen] : null;
     const hosted = isHostedKind(chosen);
-    endpointField.hidden = fixed !== null;
+    // A Claude Code connection takes a name only; Rust's dialogs choose the rest (ADR-0111).
+    const program = isProgramKind(chosen);
+    programText.hidden = !program;
+    endpointField.hidden = fixed !== null || program;
     endpoint.placeholder = chosen === "openai_compatible" ? CUSTOM_ENDPOINT_HINT : "";
     fixedEndpoint.hidden = fixed === null;
     fixedText.textContent = fixed === null ? "" : `Endpoint: ${fixed} (fixed)`;
@@ -409,7 +490,7 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
   };
   const remember = (): void => {
     view.connectionDraft = {
-      kind: kind.value as NewConnectionKind,
+      kind: kind.value as ProviderKind,
       name: name.value,
       endpoint: endpoint.value,
     };
@@ -417,7 +498,7 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
   name.addEventListener("input", remember);
   endpoint.addEventListener("input", remember);
   kind.addEventListener("change", () => {
-    const chosen = kind.value as NewConnectionKind;
+    const chosen = kind.value as ProviderKind;
     key.input.value = "";
     // Only replace values the operator has not edited.
     const untouched =
@@ -433,12 +514,14 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
   });
   arrange();
   const add = button("Add connection", () => {
-    const chosen = kind.value as NewConnectionKind;
+    const chosen = kind.value as ProviderKind;
     // Take the key out of the field before anything else can fail, then send it once.
     const typed = key.input.value;
     key.input.value = "";
     let change: ReturnType<typeof actions.addConnection>;
-    if (isLocalKind(chosen)) {
+    if (isProgramKind(chosen)) {
+      change = actions.addClaudeCode(name.value.trim());
+    } else if (isLocalKind(chosen)) {
       change = actions.addConnection(name.value.trim(), chosen, endpoint.value.trim(), null);
     } else if (isFixedHostedKind(chosen)) {
       change = actions.addConnection(name.value.trim(), chosen, null, typed);
@@ -461,6 +544,7 @@ function addConnectionForm({ submit, actions, view }: SectionContext): HTMLEleme
     fixedEndpoint,
     key.field,
     hostedText,
+    programText,
     el("div", { class: "row-actions" }, add),
   );
 }

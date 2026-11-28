@@ -119,6 +119,9 @@ const ACTIONS: Omit<Actions, "signInChatGpt" | "signOutChatGpt"> = {
     settingsApi.addConnection(revision, name, kind, endpoint, apiKey),
   setApiKey: (name, apiKey) => (revision) => settingsApi.setApiKey(revision, name, apiKey),
   removeConnection: (name) => (revision) => settingsApi.removeConnection(revision, name),
+  addClaudeCode: (name) => (revision) => settingsApi.addClaudeCode(revision, name),
+  grantClaudeCode: (name) => (revision) => settingsApi.grantClaudeCode(revision, name),
+  revokeClaudeCode: (name) => (revision) => settingsApi.revokeClaudeCode(revision, name),
   // Neither is a permission, so neither names the settings revision.
   saveChatDefaults: (defaults) => () => settingsApi.saveChatDefaults(defaults),
   setWorkspaceInstructions: (workspaceId, instructions) => () =>

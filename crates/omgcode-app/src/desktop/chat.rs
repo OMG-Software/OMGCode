@@ -15,7 +15,7 @@ use super::instructions;
 use super::preferences::{
     self, COMPACT_THRESHOLD_MAX, COMPACT_THRESHOLD_MIN, COMPACT_THRESHOLD_STEP,
 };
-use super::session_connections::{SessionConnection, reasoning_efforts};
+use super::session_connections::{CLAUDE_CODE_MODELS, SessionConnection, reasoning_efforts};
 use super::turns::{MAX_RUNNING_TURNS, ShutdownReport, SlotState, TurnJob, spawn_turn};
 use super::wire::{
     ChatDefaults, ChatModels, ChatPreferencesSaveRequest, ChatSendRequest, ChatSettingsDto,
@@ -92,7 +92,8 @@ impl DesktopService {
     /// connection first gets its access token, which can wait up to 40
     /// seconds for the session lock and then run a refresh of up to 30
     /// seconds, so the call can block for about 80 seconds. Run it on a
-    /// blocking task.
+    /// blocking task. A Claude Code connection sends no request: its list is
+    /// the fixed aliases of ADR-0111.
     ///
     /// # Errors
     ///
@@ -105,21 +106,33 @@ impl DesktopService {
         let inner = &self.inner;
         inner.resolve_path(request.session_id)?;
         let SessionConnection {
-            connection, kind, ..
+            connection,
+            kind,
+            claude_code,
         } = inner.resolve_session(request.session_id)?;
-        let models =
-            list_connection_models(&connection).map_err(|error| DesktopError::from_app(&error))?;
-        Ok(ChatModels {
-            session_id: request.session_id,
-            endpoint: connection.endpoint,
-            kind: kind.map(ProviderKind::as_str),
-            models: models
+        let models = if claude_code.is_some() {
+            CLAUDE_CODE_MODELS
+                .iter()
+                .map(|alias| ModelChoice {
+                    id: (*alias).to_owned(),
+                    cloud_tag: false,
+                })
+                .collect()
+        } else {
+            list_connection_models(&connection)
+                .map_err(|error| DesktopError::from_app(&error))?
                 .into_iter()
                 .map(|model| ModelChoice {
                     id: model.id,
                     cloud_tag: model.cloud_tag,
                 })
-                .collect(),
+                .collect()
+        };
+        Ok(ChatModels {
+            session_id: request.session_id,
+            endpoint: connection.endpoint,
+            kind: kind.map(ProviderKind::as_str),
+            models,
         })
     }
 
@@ -263,7 +276,11 @@ impl DesktopService {
         // endpoint, which was compared with the request above. The active
         // connection must equal what the window sent, so a change made in
         // `settings` after the window read it is never used unseen.
-        let SessionConnection { connection, .. } = inner.resolve_session(session_id)?;
+        let SessionConnection {
+            connection,
+            claude_code,
+            ..
+        } = inner.resolve_session(session_id)?;
         if connection.endpoint != turn_settings.endpoint {
             return Err(DesktopError::connection_changed());
         }
@@ -279,8 +296,14 @@ impl DesktopService {
             ));
         }
         let settings = chat_settings(turn_settings, connection.endpoint.clone());
-        let clients = ChatClients::for_connection(&settings, &connection)
-            .map_err(|error| DesktopError::from_app(&error))?;
+        // A Claude Code connection resolves its checked paths through core
+        // now, so a missing grant or relay refuses the turn before any
+        // process starts (ADR-0111). It has no token.
+        let clients = match &claude_code {
+            Some(choice) => ChatClients::claude_code(&settings, inner.claude_code_paths(choice)?),
+            None => ChatClients::for_connection(&settings, &connection),
+        }
+        .map_err(|error| DesktopError::from_app(&error))?;
         let token = connection.token;
         let approval_wait = match inner.current_approval_wait_observer()? {
             Some(observer) => ApprovalWaitSlot::new().with_observer(observer),
@@ -315,7 +338,7 @@ impl DesktopService {
             return Err(DesktopError::too_many_turns());
         }
         let handle = spawn_turn(inner, job)?;
-        turns.insert_running(session_id, handle, awaited);
+        turns.insert_running(session_id, handle, awaited, claude_code.is_some());
         drop(turns);
         Ok(status_of(
             session_id,
@@ -412,8 +435,10 @@ impl DesktopService {
     /// in a step that cannot be interrupted, such as a read, list, or edit tool
     /// call, can outlast the grace period: it is reported in `still_running`
     /// and may leave its journal with an open turn, which the operator can
-    /// close later with the interrupt command. After shutdown, `chat_send` is
-    /// refused.
+    /// close later with the interrupt command. While a Claude Code turn runs,
+    /// the wait is at least core's 30-second `CLAUDE_CODE_TURN_STOP_WAIT`,
+    /// so its process tree can stop and be observed ended (ADR-0111). After
+    /// shutdown, `chat_send` is refused.
     pub fn shutdown(&self, grace: Duration) -> ShutdownReport {
         let report = self.inner.shutdown_turns(grace);
         // No turn starts after shutdown, so the observer is no longer needed.

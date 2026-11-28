@@ -161,6 +161,7 @@ fn settings_window_is_granted_only_its_own_commands() {
     assert_eq!(
         settings,
         [
+            "allow-settings-add-claude-code",
             "allow-settings-add-connection",
             "allow-settings-add-discovered-profiles",
             "allow-settings-add-package-profile",
@@ -173,6 +174,7 @@ fn settings_window_is_granted_only_its_own_commands() {
             "allow-settings-clear-package-cache",
             "allow-settings-clear-scope",
             "allow-settings-discover-toolchains",
+            "allow-settings-grant-claude-code",
             "allow-settings-grant-container-folder",
             "allow-settings-import-skill",
             "allow-settings-overview",
@@ -183,6 +185,7 @@ fn settings_window_is_granted_only_its_own_commands() {
             "allow-settings-remove-toolchain-profile",
             "allow-settings-remove-web-fetch-host",
             "allow-settings-repair-data-folder",
+            "allow-settings-revoke-claude-code",
             "allow-settings-revoke-container-grant",
             "allow-settings-save-chat-defaults",
             "allow-settings-select-connection",
@@ -262,15 +265,15 @@ fn build_script_declares_the_shared_command_list() {
     assert!(build.contains("include!(\"src/command_names.rs\")"));
     assert!(build.contains(".commands(COMMAND_NAMES)"));
 
-    // And the shared list holds the 67 unique policy names.
+    // And the shared list holds the 70 unique policy names.
     let listed: Vec<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
     let unique: BTreeSet<&str> = listed.iter().copied().collect();
-    assert_eq!(listed.len(), 67);
-    assert_eq!(unique.len(), 67);
+    assert_eq!(listed.len(), 70);
+    assert_eq!(unique.len(), 70);
     let policy: Vec<&str> = Command::ALL.into_iter().map(Command::name).collect();
     assert_eq!(listed, policy);
 }
@@ -381,7 +384,7 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
         .collect();
     assert_eq!(settings_calls, settings_commands);
 
-    // ...and together they cover all 67 policy commands.
+    // ...and together they cover all 70 policy commands.
     let union: BTreeSet<String> = main_calls
         .union(&approval_calls)
         .cloned()
@@ -639,10 +642,10 @@ fn generate_handler_registers_exactly_the_policy_commands() {
         .map(|entry| entry.rsplit("::").next().expect("segment"))
         .collect();
 
-    // Then they are the 67 shared names, once each.
+    // Then they are the 70 shared names, once each.
     let unique: BTreeSet<&str> = registered.iter().copied().collect();
-    assert_eq!(registered.len(), 67);
-    assert_eq!(unique.len(), 67);
+    assert_eq!(registered.len(), 70);
+    assert_eq!(unique.len(), 70);
     let shared: BTreeSet<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
@@ -659,7 +662,7 @@ fn generate_handler_registers_exactly_the_policy_commands() {
 #[test]
 fn every_handler_authorizes_its_own_command_before_touching_the_service() {
     let handlers = all_handlers();
-    assert_eq!(handlers.len(), 67);
+    assert_eq!(handlers.len(), 70);
     for handler in handlers {
         // Given the command the function name denotes.
         let command = Command::ALL
@@ -793,7 +796,7 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     }
     assert_eq!(
         expected.len(),
-        67,
+        70,
         "all commands are called by the frontend"
     );
 
@@ -846,6 +849,7 @@ fn command_error_keeps_the_service_code_and_message() {
         endpoint: "http://127.0.0.1:1234/v1".to_owned(),
         token_source: omgcode_app::TokenSource::Environment,
         stream: true,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("open service");
     let failure = service
@@ -878,10 +882,10 @@ fn internal_error_is_fixed_and_carries_no_detail() {
 /// The settings window names every provider kind core records and shows each
 /// named hosted provider's fixed endpoint exactly as core enforces it
 /// (ADR-0092). Rust supplies the endpoint; a drift would only mislead the
-/// operator, so this keeps the display honest. A kind that runs a program,
-/// `claude_code`, is named so a profile the trusted CLI recorded shows by
-/// name, and is never offered in the add dropdown, since only the trusted
-/// CLI records one (ADR-0109).
+/// operator, so this keeps the display honest. Every kind is offered in the
+/// add dropdown; a kind that runs a program, `claude_code`, is added through
+/// its own command, whose native dialogs choose the program and the sign-in
+/// folder (ADR-0111).
 #[test]
 fn the_frontend_names_every_provider_and_shows_core_endpoints() {
     let source = read(&crate_dir().join("ui/src/providers.ts"));
@@ -894,10 +898,9 @@ fn the_frontend_names_every_provider_and_shows_core_endpoints() {
     for kind in omgcode_app::desktop::NewConnectionKind::ALL {
         let name = kind.as_str();
         assert!(flat.contains(&format!("{name}: \"")), "{name} is not named");
-        assert_eq!(
+        assert!(
             offered.contains(&format!("\"{name}\",")),
-            !kind.runs_program(),
-            "{name} is offered only when the desktop can add it"
+            "{name} is not offered in the add dropdown"
         );
         if let Some(endpoint) = kind.fixed_endpoint() {
             assert!(
