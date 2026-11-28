@@ -85,7 +85,9 @@ while its turn's fake, relay, and a linger run and checks that path;
 each failure and check that the folder is kept and named;
 `a_supervisor_ends_a_copy_that_runs_past_its_deadline` checks the copy's
 deadline; and, on Windows, `a_scene_whose_revocation_fails_keeps_its_folders`
-checks the kept scene. The
+moves a granted folder aside so that the drop's revocation fails, checks
+that the scene is kept, and, with the folder back, that the retry revokes
+the connection and deletes its profile. The
 linger is a descendant of the fake that ignores its closed pipes and ends
 itself only after five minutes, so on Linux only the scope's stop ends it.
 

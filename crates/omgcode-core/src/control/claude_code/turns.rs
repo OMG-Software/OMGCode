@@ -203,19 +203,21 @@ impl ClaudeCodeWatch {
     /// stopped writing or syncing the record or for another turn holding the
     /// records' lock for [`RECORDS_LOCK_WAIT`]. No process may start then.
     pub(crate) fn record_turn(&self) -> Result<TurnRecord, ControlError> {
-        self.record_turn_observed(|| {})
+        self.record_turn_observed(|| {}, || {})
     }
 
-    /// [`Self::record_turn`], calling `counted` once the records were
-    /// counted and before the new one is written, so a test can start
-    /// another turn there.
+    /// [`Self::record_turn`], calling `waiting` the first time it finds the
+    /// records' lock held, and `counted` once the records were counted and
+    /// before the new one is written, so a test can start another turn
+    /// there and see it wait.
     pub(super) fn record_turn_observed(
         &self,
+        waiting: impl FnOnce(),
         counted: impl FnOnce(),
     ) -> Result<TurnRecord, ControlError> {
         // Held until the record is written and synced, so two turns, also
         // of two connections, cannot both count a free record.
-        let _records = lock_records(&self.data_root)?;
+        let _records = lock_records(&self.data_root, waiting)?;
         let mut kept = 0;
         each_turn_record(&self.data_root, |_, _| {
             kept += 1;
@@ -629,21 +631,28 @@ fn open_turn_lock(data_root: &Path, profile_id: Uuid) -> io::Result<File> {
 }
 
 /// Take the exclusive lock under which a turn counts the turn records and
-/// writes its own, waiting at most [`RECORDS_LOCK_WAIT`] for another turn.
+/// writes its own, waiting at most [`RECORDS_LOCK_WAIT`] for another turn,
+/// and calling `waiting` the first time the lock is found held.
 ///
 /// # Errors
 ///
 /// The I/O error that stopped opening or locking the file, and one that
 /// says another turn held it for the whole wait.
-fn lock_records(data_root: &Path) -> io::Result<File> {
+fn lock_records(data_root: &Path, waiting: impl FnOnce()) -> io::Result<File> {
     let file = open_lock(&data_root.join(RUNTIME_PARENT).join(RECORDS_LOCK))?;
     let until = Instant::now()
         .checked_add(RECORDS_LOCK_WAIT)
         .unwrap_or_else(Instant::now);
+    let mut waiting = Some(waiting);
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),
-            Err(TryLockError::WouldBlock) if Instant::now() < until => thread::sleep(POLL),
+            Err(TryLockError::WouldBlock) if Instant::now() < until => {
+                if let Some(waiting) = waiting.take() {
+                    waiting();
+                }
+                thread::sleep(POLL);
+            }
             Err(TryLockError::WouldBlock) => {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,

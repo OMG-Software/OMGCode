@@ -1384,12 +1384,17 @@ fn turn_record_count(data: &Path) -> usize {
 /// Two turns cannot both take the last free record: a turn counts the
 /// records and writes its own under one exclusive lock across every
 /// connection. The first turn is held after its count, with one record
-/// free; a turn of another connection started then finds the lock held,
-/// so it neither counts nor writes until the first wrote its record, and
-/// is then refused. Without the lock both would write, one record past the
-/// limit.
+/// free, until a turn of another connection started then reports that it
+/// found the lock held, so it neither counted nor wrote before the first
+/// wrote its record, and is then refused. Without the lock it would end
+/// instead, one record past the limit.
 #[test]
 fn two_turns_cannot_both_take_the_last_free_record() {
+    /// What the held first turn hears from the second.
+    enum Second {
+        Waiting,
+        Ended,
+    }
     let scene = Scene::new();
     let (_, _, watch) = resolved_turn(&scene);
     let other = ClaudeCodeWatch::for_tests(scene.data.clone(), Uuid::new_v4(), &scene.root);
@@ -1397,29 +1402,36 @@ fn two_turns_cannot_both_take_the_last_free_record() {
         let _left = other.record_turn().expect("record below the limit");
     }
     let (counted, at_count) = std::sync::mpsc::channel();
-    let (finished, second_finished) = std::sync::mpsc::channel::<()>();
-    let ((first, overlapped), second) = std::thread::scope(|scope| {
+    let (tell, news) = std::sync::mpsc::channel();
+    let ((first, heard), second) = std::thread::scope(|scope| {
         let watch = &watch;
         let first = scope.spawn(move || {
-            let mut overlapped = false;
-            let first = watch.record_turn_observed(|| {
-                counted.send(()).expect("the test waits for the count");
-                // Held after its count: a second turn that ended now got
-                // past the count too.
-                overlapped = second_finished
-                    .recv_timeout(std::time::Duration::from_millis(500))
-                    .is_ok();
-            });
-            (first, overlapped)
+            let mut heard = None;
+            let first = watch.record_turn_observed(
+                || {},
+                || {
+                    counted.send(()).expect("the test waits for the count");
+                    // Held after its count until the second turn waits for
+                    // the lock or ends; one that ended got past the count.
+                    heard = news.recv_timeout(std::time::Duration::from_secs(30)).ok();
+                },
+            );
+            (first, heard)
         });
         at_count
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the first turn counted");
         let other = &other;
         let second = scope.spawn(move || {
-            let second = other.record_turn();
-            // The first turn stopped listening once it wrote its record.
-            let _ = finished.send(());
+            let waiting = tell.clone();
+            let second = other.record_turn_observed(
+                move || {
+                    let _ = waiting.send(Second::Waiting);
+                },
+                || {},
+            );
+            // The first turn stopped listening once it heard one of these.
+            let _ = tell.send(Second::Ended);
             second
         });
         (
@@ -1427,10 +1439,11 @@ fn two_turns_cannot_both_take_the_last_free_record() {
             second.join().expect("the second turn"),
         )
     });
-    assert!(
-        !overlapped,
-        "the second turn ended while the first held its count"
-    );
+    match heard {
+        Some(Second::Waiting) => {}
+        Some(Second::Ended) => panic!("the second turn ended while the first held its count"),
+        None => panic!("the second turn neither waited for the lock nor ended"),
+    }
     let _first = first.expect("the first turn takes the last free record");
     let refused = second.expect_err("no record past the limit");
     assert!(refused.to_string().contains("full"), "{refused}");

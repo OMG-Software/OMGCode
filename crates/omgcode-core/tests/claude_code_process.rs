@@ -896,13 +896,13 @@ impl Drop for Scene {
 }
 
 /// A scene whose connection cannot be revoked when it is dropped, here
-/// because a turn record left behind fails the revocation's wait, keeps its
-/// folders, whose settings a retry needs. Once the record is acknowledged,
-/// the retry revokes the connection and deletes its container profile.
+/// because its granted relay folder was moved, keeps its folders, whose
+/// settings a retry needs. Once the folder is back, the same folder by its
+/// identity, the retry revokes the connection and deletes its container
+/// profile.
 #[cfg(windows)]
 fn a_scene_whose_revocation_fails_keeps_its_folders() {
     let scene = Scene::new();
-    let profile_id = scene.profile_id();
     let data = scene.data.clone();
     let base = scene
         .temporary
@@ -910,23 +910,11 @@ fn a_scene_whose_revocation_fails_keeps_its_folders() {
         .expect("the scene's folder")
         .path()
         .to_owned();
-    let records = data.join("claude-code");
-    fs::create_dir_all(&records).expect("the connection's storage");
-    fs::write(
-        records.join(format!(
-            "{}.{}.unconfirmed",
-            profile_id.simple(),
-            uuid::Uuid::new_v4().simple()
-        )),
-        b"{}",
-    )
-    .expect("a turn record left behind");
+    let (relay, moved) = (base.join("relay"), base.join("relay-moved"));
+    fs::rename(&relay, &moved).expect("move the relay folder away");
     drop(scene);
     assert!(base.is_dir(), "the scene's folders are kept");
-    assert!(
-        omgcode_core::control::acknowledge_claude_code_cleanup(&data, profile_id)
-            .expect("acknowledged")
-    );
+    fs::rename(&moved, &relay).expect("move the relay folder back");
     let revocation = ControlStore::open(&data)
         .expect("control store")
         .revoke_claude_code_grants("claude")
