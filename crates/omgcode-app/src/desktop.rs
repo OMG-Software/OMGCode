@@ -103,6 +103,7 @@ mod settings;
 mod settings_changes;
 mod settings_chat;
 mod settings_chatgpt;
+mod settings_claude_code;
 mod settings_discovery;
 mod settings_execution;
 mod settings_skills;
@@ -131,7 +132,7 @@ pub use self::processes::{
     SessionProcesses,
 };
 use self::review_tokens::ReviewTokens;
-pub use self::settings_changes::{Confirmation, FolderPurpose, SettingsPrompt};
+pub use self::settings_changes::{Confirmation, FilePurpose, FolderPurpose, SettingsPrompt};
 pub use self::settings_discovery::{
     DiscoveredProfilesRequest, MAX_SELECTED_PROPOSALS, ProposedRootView, ProposedVariableView,
     ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProposalView, discovery_host,
@@ -155,7 +156,8 @@ pub use self::wire::{
     ApprovalView, ApprovalsSummary, Binding, BranchState, BranchView, ChatBudgetsDto,
     ChatBudgetsSaveRequest, ChatDefaults, ChatDefaultsView, ChatEvent, ChatGptRequest,
     ChatGptSignOutResult, ChatModels, ChatOutcome, ChatPreferencesDto, ChatPreferencesSaveRequest,
-    ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ComposerPreferencesDto,
+    ChatSendRequest, ChatSettingsDto, ChatState, ChatStatus, ClaudeCodeAddRequest,
+    ClaudeCodeConnectionRequest, ClaudeCodeGrantView, ClaudeCodeView, ComposerPreferencesDto,
     ConnectionAddRequest, ConnectionChoice, ConnectionChooseRequest, ConnectionOrigin,
     ConnectionRemoveRequest, ConnectionSelectRequest, ConnectionSourceView, ConnectionStatus,
     ConnectionStatusRequest, ConnectionView, ContainerGrantView, ContextBreakdown, ContextMeterDto,
@@ -205,6 +207,12 @@ pub struct DesktopConfig {
     /// provisional text to the subscriber (ADR-0049). When `false`, turns send
     /// non-streaming requests and only `finished` events are pushed.
     pub stream: bool,
+    /// The `omgcode` executable a Claude Code turn runs as its MCP relay
+    /// (ADR-0111). The shell passes the one in its own executable's folder;
+    /// on Windows the connection's container needs a grant for that folder.
+    /// `None` fails every Claude Code turn with `claude_code_unusable`
+    /// before any process starts.
+    pub claude_code_relay: Option<PathBuf>,
 }
 
 /// A replacement token supplier for an embedder or a test that must avoid the
@@ -315,6 +323,8 @@ struct Inner {
     token: TokenResolver,
     /// Whether turns send streamed requests ([`DesktopConfig::stream`]).
     stream: bool,
+    /// The Claude Code relay ([`DesktopConfig::claude_code_relay`]).
+    claude_code_relay: Option<PathBuf>,
     index: Mutex<IndexState>,
     turns: Mutex<TurnTable>,
     reviews: Mutex<ReviewTokens>,
@@ -399,6 +409,7 @@ impl DesktopService {
                 endpoint: config.endpoint,
                 token,
                 stream: config.stream,
+                claude_code_relay: config.claude_code_relay,
                 index: Mutex::new(IndexState::new(index)),
                 turns: Mutex::new(TurnTable::default()),
                 reviews: Mutex::new(ReviewTokens::default()),

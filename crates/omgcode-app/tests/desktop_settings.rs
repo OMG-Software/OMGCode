@@ -88,6 +88,7 @@ fn environment_service(data: &Path, endpoint: &str) -> DesktopService {
         endpoint: endpoint.to_owned(),
         token_source: TokenSource::Environment,
         stream: false,
+        claude_code_relay: None,
     })
     .expect("open desktop service")
 }

@@ -614,6 +614,23 @@ export interface ProviderProfileView {
   active: boolean;
   /** For a signed-in ChatGPT connection, the account's email, for display only (ADR-0093). */
   account_label: string | null;
+  /** For a Claude Code connection, its program, sign-in folder, and grants (ADR-0111). */
+  claude_code?: ClaudeCodeView;
+}
+
+/** A recorded Claude Code connection's setup, for display only (ADR-0111). */
+export interface ClaudeCodeView {
+  program: string;
+  config_folder: string;
+  /** The container grants not confirmed revoked; always empty outside Windows. */
+  grants: ClaudeCodeGrantView[];
+}
+
+/** One grant to a Claude Code connection's container (ADR-0109). */
+export interface ClaudeCodeGrantView {
+  role: "program" | "configuration" | "runtime" | "relay";
+  directory: string;
+  state: "pending" | "active" | "revoking";
 }
 
 /** The answer to `settings_sign_out_chatgpt` (ADR-0093). */
@@ -650,7 +667,8 @@ export type NewConnectionKind = LocalProviderKind | FixedHostedKind | "openai_co
 
 /**
  * A provider that drives a program on this computer: the operator's signed-in Claude Code CLI
- * (ADR-0109). Only the trusted CLI records or uses one; this window can name and remove it.
+ * (ADR-0109). The settings window adds one through its own command, whose native dialogs choose
+ * the program and the sign-in folder, and only a session can choose it (ADR-0111).
  */
 export type ProgramProviderKind = "claude_code";
 

@@ -9,7 +9,9 @@
 //! ends inside the grace period (ADR-0050). A turn still waiting when the grace
 //! period ends is abandoned: a request that is not streamed cannot be
 //! interrupted. Its journal keeps an open turn, which the operator can close
-//! later with the interrupt command or the trusted CLI.
+//! later with the interrupt command or the trusted CLI. While a Claude Code
+//! turn runs, the service waits at least 30 seconds instead, so the
+//! connection's process tree can stop and be observed ended (ADR-0111).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};

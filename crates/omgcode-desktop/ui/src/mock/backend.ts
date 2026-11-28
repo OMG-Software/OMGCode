@@ -43,6 +43,7 @@ import {
   isFixedHostedKind,
   isHostedKind,
   isLocalKind,
+  isProgramKind,
   NEW_CONNECTION_KINDS,
 } from "../providers";
 import {
@@ -62,6 +63,34 @@ const TOKEN_LIFETIME_MS = 120_000;
 const MOCK_ENDPOINT = "http://127.0.0.1:1234/v1";
 /** A mock session's record that follows the global default (a model chosen, no provider). */
 const FOLLOW = Symbol("follow");
+/** The models and efforts Rust offers for a Claude Code connection (ADR-0111). */
+export const CLAUDE_CODE_MODELS = ["sonnet", "opus", "haiku", "fable", "sonnet[1m]", "opus[1m]"];
+export const CLAUDE_CODE_EFFORTS: readonly ReasoningEffort[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+/** The endpoint label a Claude Code connection records for a session, as Rust writes it. */
+function claudeCodeLabel(name: string): string {
+  return `claude-code:${name}`;
+}
+
+/** What a session records for a profile: its endpoint, or a Claude Code connection's label. */
+function sessionEndpoint(profile: { name: string; kind: string; endpoint: string | null }) {
+  return isProgramKind(profile.kind) ? claudeCodeLabel(profile.name) : profile.endpoint;
+}
+
+/** Whether a session may choose the profile: one core lets be chosen, or a Claude Code one. */
+function sessionSelectable(profile: {
+  kind: string;
+  selectable: boolean;
+  endpoint: string | null;
+}): boolean {
+  return isProgramKind(profile.kind) || (profile.selectable && profile.endpoint !== null);
+}
 /** Every effort core accepts, in its order (ADR-0102). */
 const REASONING_EFFORTS: readonly ReasoningEffort[] = [
   "none",
@@ -923,21 +952,23 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           session_id: id,
           endpoint: view.endpoint,
           kind: view.kind,
-          models: isHostedKind(view.kind)
-            ? [
-                { id: "gpt-oss:120b", cloud_tag: false },
-                { id: "qwen3-coder:480b", cloud_tag: false },
-              ]
-            : view.kind === "ollama_local"
+          models: isProgramKind(view.kind)
+            ? CLAUDE_CODE_MODELS.map((model) => ({ id: model, cloud_tag: false }))
+            : isHostedKind(view.kind)
               ? [
-                  { id: "gpt-oss:120b-cloud", cloud_tag: true },
-                  { id: "lfm2.5:latest", cloud_tag: false },
-                  { id: "qwen2.5-coder:7b", cloud_tag: false },
+                  { id: "gpt-oss:120b", cloud_tag: false },
+                  { id: "qwen3-coder:480b", cloud_tag: false },
                 ]
-              : [
-                  { id: "google/gemma-4-e4b", cloud_tag: false },
-                  { id: "qwen2.5-coder", cloud_tag: false },
-                ],
+              : view.kind === "ollama_local"
+                ? [
+                    { id: "gpt-oss:120b-cloud", cloud_tag: true },
+                    { id: "lfm2.5:latest", cloud_tag: false },
+                    { id: "qwen2.5-coder:7b", cloud_tag: false },
+                  ]
+                : [
+                    { id: "google/gemma-4-e4b", cloud_tag: false },
+                    { id: "qwen2.5-coder", cloud_tag: false },
+                  ],
         } satisfies ChatModels;
       }
       // A fixed fake estimate, so the Context tab has something to show (ADR-0087). The
@@ -1309,7 +1340,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         }
         const profile =
           wanted === null ? null : settings.provider_profiles.find((p) => p.name === wanted);
-        if (profile === undefined || (profile !== null && !profile.selectable)) {
+        if (profile === undefined || (profile !== null && !sessionSelectable(profile))) {
           fail("control", "only a profile with a recorded endpoint can be chosen");
         }
         // A stale choice is no current choice, as in Rust, so the same name can be chosen again.
@@ -1319,7 +1350,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         // Accepted efforts depend on the provider, so the choice clears it with the model.
         sessionChoices.set(id, {
           profile: wanted,
-          endpoint: profile === null ? MOCK_ENDPOINT : profile.endpoint,
+          endpoint: profile === null ? MOCK_ENDPOINT : sessionEndpoint(profile),
           model: "",
           effort: null,
         });
@@ -1373,6 +1404,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           const apiKey = args.api_key ?? null;
           if (!(NEW_CONNECTION_KINDS as readonly string[]).includes(kind)) {
             fail("invalid_argument", "Bad kind.");
+          }
+          // Rust adds one through settings_add_claude_code, with native dialogs (ADR-0111).
+          if (isProgramKind(kind)) {
+            fail(
+              "invalid_request",
+              "A Claude Code connection is added with its own program and folder dialogs.",
+            );
           }
           // The same three shapes Rust accepts (ADR-0092).
           let recorded: string;
@@ -1747,6 +1785,49 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         });
         return { overview, revoked: true };
       }
+      // Rust's native dialogs choose the program and folder; the mock records fixed ones.
+      case "settings_add_claude_code":
+        return changeSettings(args, () => {
+          const name = str(args, "name");
+          if (name === "" || settings.provider_profiles.some((p) => p.name === name)) {
+            fail(
+              "control",
+              "a provider profile with this name already exists or the name is empty",
+            );
+          }
+          settings.provider_profiles.push({
+            name,
+            kind: "claude_code",
+            auth: "subscription",
+            endpoint: null,
+            credential_bound: false,
+            selectable: false,
+            active: false,
+            account_label: null,
+            claude_code: {
+              program: "C:\\Tools\\claude.exe",
+              config_folder: "C:\\Claude\\sign-in",
+              grants: [],
+            },
+          });
+        });
+      case "settings_grant_claude_code":
+        return changeSettings(args, () => {
+          const setup = claudeCodeSetup(str(args, "name"));
+          if (!settings.container_grants_supported) {
+            fail("unsupported_platform", "Container grants are supported on Windows only.");
+          }
+          setup.grants = [
+            { role: "program", directory: "C:\\Tools", state: "active" },
+            { role: "configuration", directory: setup.config_folder, state: "active" },
+            { role: "runtime", directory: "C:\\Data\\claude-code\\run", state: "active" },
+            { role: "relay", directory: "C:\\OMGCode", state: "active" },
+          ];
+        });
+      case "settings_revoke_claude_code":
+        return changeSettings(args, () => {
+          claudeCodeSetup(str(args, "name")).grants = [];
+        });
       case "settings_remove_connection":
         return changeSettings(args, () => {
           const name = str(args, "name");
@@ -1757,6 +1838,9 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           }
           if (profile.auth === "subscription" && profile.credential_bound) {
             fail("control", "this profile is signed in with ChatGPT; sign out first");
+          }
+          if ((profile.claude_code?.grants.length ?? 0) > 0) {
+            fail("control", "revoke the Claude Code connection's grants first");
           }
           // Rust asks a native Yes/No first when a key is stored, then deletes both.
           settings.provider_profiles.splice(index, 1);
@@ -1863,6 +1947,15 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     };
   }
 
+  /** A recorded Claude Code connection's setup, or a refusal as core gives one. */
+  function claudeCodeSetup(name: string) {
+    const setup = settings.provider_profiles.find((p) => p.name === name)?.claude_code;
+    if (setup === undefined) {
+      fail("control", "the provider profile is not a Claude Code connection");
+    }
+    return setup;
+  }
+
   /** The endpoint the next mock turn uses: the active connection's, or the default. */
   function currentEndpoint(): string {
     return settings.connection.endpoint;
@@ -1903,7 +1996,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
       return choice.endpoint !== MOCK_ENDPOINT;
     }
     const profile = settings.provider_profiles.find((each) => each.name === choice.profile);
-    return profile === undefined || !profile.selectable || profile.endpoint !== choice.endpoint;
+    return (
+      profile === undefined ||
+      !sessionSelectable(profile) ||
+      sessionEndpoint(profile) !== choice.endpoint
+    );
   }
 
   /** The connection a session's next turn uses: its own choice, or the global default. */
@@ -1925,9 +2022,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
 
   /** The efforts a session's connection takes: all, or none where core's endpoint rule takes none. */
   function acceptedEfforts(sessionId: string | null): ReasoningEffort[] {
-    return endpointTakesEffort(effectiveConnection(sessionId).endpoint)
-      ? [...REASONING_EFFORTS]
-      : [];
+    const view = effectiveConnection(sessionId);
+    if (isProgramKind(view.kind)) {
+      return [...CLAUDE_CODE_EFFORTS];
+    }
+    return endpointTakesEffort(view.endpoint) ? [...REASONING_EFFORTS] : [];
   }
 
   /** What the composer reads for a session (ADR-0071). */
@@ -1937,15 +2036,13 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
     const own = choice !== undefined && choice.profile !== FOLLOW;
     const stale = staleChoice(sessionId);
     const choices = settings.connection.selectable
-      ? settings.provider_profiles
-          .filter((profile) => profile.selectable && profile.endpoint !== null)
-          .map((profile) => ({
-            name: profile.name,
-            kind: profile.kind,
-            endpoint: profile.endpoint ?? "",
-            // A replacement under the same name is offered, but active only once chosen again.
-            active: !stale && profile.name === view.profile,
-          }))
+      ? settings.provider_profiles.filter(sessionSelectable).map((profile) => ({
+          name: profile.name,
+          kind: profile.kind,
+          endpoint: sessionEndpoint(profile) ?? "",
+          // A replacement under the same name is offered, but active only once chosen again.
+          active: !stale && profile.name === view.profile,
+        }))
       : [];
     return clone({
       connection: view,

@@ -24,7 +24,8 @@ pub mod stream;
 mod watch;
 
 pub use launch::{
-    ClaudeCodeClient, ClaudeCodeConfig, RELAY_NONCE_VARIABLE, RELAY_SUBCOMMAND, relay,
+    CLAUDE_CODE_EFFORTS, ClaudeCodeClient, ClaudeCodeConfig, RELAY_NONCE_VARIABLE,
+    RELAY_SUBCOMMAND, relay,
 };
 pub use model::ClaudeCodeModel;
 

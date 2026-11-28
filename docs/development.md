@@ -525,8 +525,20 @@ compact` from that same executable, because it is the MCP relay. On Linux,
 run them inside `systemd-run --user --scope -p Delegate=yes`, as for `run`.
 `--model` takes a Claude Code model name or alias, and `--reasoning-effort`
 takes `low` to `max`. A turn that the CLI reports as not signed in fails with
-`claude_code_not_signed_in`. `models`, the desktop shell, and the active
-selection refuse the profile with `claude_code_cli_only`. When a revocation
+`claude_code_not_signed_in`. `models`, the active selection, and the
+desktop's `--provider-profile` launch argument refuse the profile with
+`claude_code_cli_only`.
+
+Since ADR-0111 the desktop shell can use the connection too. In the
+`settings` window's **Model** section, choose **Claude Code** in the add
+dropdown and press **Add connection**; Rust then asks for the `claude`
+program and the sign-in folder in native dialogs and confirms both. On
+Windows, **Grant folders** grants the same four folders, with the `omgcode`
+executable beside `omgcode-desktop` as the relay, so keep both executables
+in one folder, as the testing archives do; a grant made by an `omgcode` in
+another folder does not cover the desktop's turns. Then choose the
+connection for a session in the `main` window's model box and confirm. It
+is never the default connection. When a revocation
 or removal reports that a turn was not observed to end with its whole
 process tree, check that tree before anything else: no `claude` process of
 the connection, none of its MCP relays, and none of their descendants may

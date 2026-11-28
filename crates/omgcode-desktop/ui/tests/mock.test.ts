@@ -522,6 +522,102 @@ describe("mock backend", () => {
     expect(scope).toEqual({ workspace_id: second });
   });
 
+  it("offers a Claude Code connection per session with its models and efforts, like core", async () => {
+    // Given a recorded Claude Code connection, which can never be the global connection.
+    const { invoke } = createMockBackend();
+    const id = "00000000-0000-4000-8000-000000000001";
+    const { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    await expect(
+      invoke("settings_add_connection", {
+        revision,
+        name: "claude",
+        kind: "claude_code",
+        endpoint: null,
+        api_key: null,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    const added = (await invoke("settings_add_claude_code", {
+      revision,
+      name: "claude",
+    })) as SettingsOverview;
+    const recorded = added.provider_profiles.find((profile) => profile.name === "claude");
+    expect(recorded).toMatchObject({ kind: "claude_code", selectable: false, endpoint: null });
+    await expect(
+      invoke("settings_select_connection", { revision: added.revision, profile: "claude" }),
+    ).rejects.toMatchObject({ code: "control" });
+
+    // When a session chooses it.
+    type Status = {
+      connection: { endpoint: string; kind: string | null };
+      choices: Array<{ name: string; endpoint: string; kind: string }>;
+      reasoning_efforts: string[];
+    };
+    const before = (await invoke("connection_status", { session_id: id })) as Status;
+    expect(before.choices).toContainEqual(
+      expect.objectContaining({
+        name: "claude",
+        kind: "claude_code",
+        endpoint: "claude-code:claude",
+      }),
+    );
+    const chosen = (await invoke("connection_select", {
+      session_id: id,
+      profile: "claude",
+    })) as Status;
+
+    // Then the session reports the label, the five efforts, and the fixed aliases.
+    expect(chosen.connection).toMatchObject({
+      endpoint: "claude-code:claude",
+      kind: "claude_code",
+    });
+    expect(chosen.reasoning_efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    const listed = (await invoke("chat_models", { session_id: id })) as {
+      models: Array<{ id: string; cloud_tag: boolean }>;
+    };
+    expect(listed.models.map((model) => model.id)).toEqual([
+      "sonnet",
+      "opus",
+      "haiku",
+      "fable",
+      "sonnet[1m]",
+      "opus[1m]",
+    ]);
+    expect(listed.models.every((model) => !model.cloud_tag)).toBe(true);
+  });
+
+  it("grants and revokes a Claude Code connection, and refuses removal while it holds grants", async () => {
+    const { invoke } = createMockBackend();
+    let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;
+    ({ revision } = (await invoke("settings_add_claude_code", {
+      revision,
+      name: "claude",
+    })) as SettingsOverview);
+    const granted = (await invoke("settings_grant_claude_code", {
+      revision,
+      name: "claude",
+    })) as SettingsOverview;
+    const setup = granted.provider_profiles.find((p) => p.name === "claude")?.claude_code;
+    expect(setup?.grants.map((grant) => grant.role)).toEqual([
+      "program",
+      "configuration",
+      "runtime",
+      "relay",
+    ]);
+    await expect(
+      invoke("settings_remove_connection", { revision: granted.revision, name: "claude" }),
+    ).rejects.toMatchObject({ code: "control" });
+    const revoked = (await invoke("settings_revoke_claude_code", {
+      revision: granted.revision,
+      name: "claude",
+    })) as SettingsOverview;
+    expect(revoked.provider_profiles.find((p) => p.name === "claude")?.claude_code?.grants).toEqual(
+      [],
+    );
+    await expect(
+      invoke("settings_grant_claude_code", { revision: revoked.revision, name: "ollama" }),
+    ).rejects.toMatchObject({ code: "control" });
+  });
+
   it("adds Ollama Cloud with a key, replaces the key, and removes a bound profile", async () => {
     const { invoke } = createMockBackend();
     let { revision } = (await invoke("settings_overview", {})) as SettingsOverview;

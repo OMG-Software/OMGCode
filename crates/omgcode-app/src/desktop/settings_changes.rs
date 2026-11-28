@@ -57,7 +57,9 @@ use omgcode_core::turn::display_safe_line;
 use super::DesktopService;
 use super::error::DesktopError;
 use super::instructions;
-use super::session_connections::{ChosenConnection, SessionRecord, check_model, recorded_endpoint};
+use super::session_connections::{
+    ChosenConnection, SessionRecord, check_model, recorded_endpoint, session_choice,
+};
 use super::settings::overview_of;
 use super::state::folder_of_directory;
 use super::wire::{
@@ -86,6 +88,9 @@ pub enum FolderPurpose {
     /// A folder to grant read and execute to a workspace's container. A
     /// read-write grant opens no dialog (ADR-0104).
     ContainerGrant,
+    /// The folder `claude auth login` signed in to, for a Claude Code
+    /// connection (ADR-0111).
+    ClaudeCodeSignIn,
 }
 
 impl FolderPurpose {
@@ -102,6 +107,25 @@ impl FolderPurpose {
             // The access goes to the workspace's AppContainer, not to the
             // operator or the folder (ADR-0104).
             Self::ContainerGrant => "Choose a folder the workspace's sandbox may read and execute",
+            Self::ClaudeCodeSignIn => "Choose the folder claude signed in to",
+        }
+    }
+}
+
+/// What the operator is asked to choose a file for. The shell uses it for the
+/// dialog title.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilePurpose {
+    /// The `claude` program of a Claude Code connection (ADR-0111).
+    ClaudeCodeProgram,
+}
+
+impl FilePurpose {
+    /// The fixed dialog title.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::ClaudeCodeProgram => "Choose the claude program",
         }
     }
 }
@@ -125,6 +149,15 @@ pub trait SettingsPrompt {
     /// Ask the operator to choose an existing folder, starting at `start`
     /// when given. `None` when the operator cancels or no dialog can be shown.
     fn pick_folder(&self, purpose: FolderPurpose, start: Option<&Path>) -> Option<PathBuf>;
+
+    /// Ask the operator to choose an existing file, starting at `start` when
+    /// given. `None` when the operator cancels or no dialog can be shown,
+    /// which is what a prompt that offers no file dialog answers, so the
+    /// change is cancelled.
+    fn pick_file(&self, purpose: FilePurpose, start: Option<&Path>) -> Option<PathBuf> {
+        let _ = (purpose, start);
+        None
+    }
 
     /// Ask the operator to confirm a change. `true` only on an explicit
     /// confirmation.
@@ -304,7 +337,7 @@ fn raise_confirmation(
 }
 
 /// Largest profile name accepted before core applies its own, smaller bound.
-const MAX_NAME_INPUT_BYTES: usize = 256;
+pub(super) const MAX_NAME_INPUT_BYTES: usize = 256;
 
 /// How the confirmation names a provider.
 const fn provider_label(kind: ProviderKind) -> &'static str {
@@ -377,6 +410,26 @@ fn profile_confirmation(
             display_safe_line(endpoint),
         ),
     }
+}
+
+/// The confirmation for choosing the Claude Code connection `name` for one
+/// session (ADR-0111): it names the program OMGCode starts and the sign-in
+/// folder whose account the program uses. Every word is fixed text or a
+/// display-safe value.
+fn claude_code_confirmation(
+    store: &ControlStore,
+    name: &str,
+) -> Result<Confirmation, ControlError> {
+    let (_, setup) = store.claude_code_setup(name)?;
+    Ok(Confirmation {
+        title: "Choose the model connection",
+        message: format!(
+            "Send this session's chat turns through the Claude Code connection {}?\n\nProgram: {}\nSign-in folder: {}\n\nFor each model request OMGCode starts this claude program, signed in with the account in that folder. Each turn's messages, instructions, selected skills, and tool results go to it and through it to Anthropic. The program reaches OMGCode's tools only, under the workspace's settings.",
+            display_safe_line(name),
+            setup.program_display(),
+            display_safe_line(&setup.config_folder_display()),
+        ),
+    })
 }
 
 /// The confirmation for choosing the global default connection, composed from
@@ -466,17 +519,18 @@ fn requested_choice(
         ));
     };
     let store = store.ok_or(ControlError::UnknownProvider)?;
-    let status = store.check_provider_selectable(name)?;
-    let endpoint = recorded_endpoint(store, name).ok_or(ControlError::ProviderRefused(
-        "the recorded endpoint cannot be used",
-    ))?;
-    let confirmation = profile_confirmation(
-        "this session's chat turns",
-        status.profile().kind(),
-        status.profile().name(),
-        &endpoint,
-        status.credential().is_some(),
-    );
+    let (status, endpoint) = session_choice(store, name)?;
+    let confirmation = if status.profile().kind() == ProviderKind::ClaudeCode {
+        claude_code_confirmation(store, status.profile().name())?
+    } else {
+        profile_confirmation(
+            "this session's chat turns",
+            status.profile().kind(),
+            status.profile().name(),
+            &endpoint,
+            status.credential().is_some(),
+        )
+    };
     Ok((
         Choice::Profile {
             name: status.profile().name().to_owned(),
@@ -498,13 +552,10 @@ fn current_choice(
             (endpoint == default_endpoint).then_some(Choice::Default)
         }
         Some(ChosenConnection::Profile { name, endpoint }) => {
-            let store = store?;
-            store.check_provider_selectable(name).ok()?;
-            (recorded_endpoint(store, name).as_deref() == Some(endpoint.as_str())).then(|| {
-                Choice::Profile {
-                    name: name.clone(),
-                    endpoint: endpoint.clone(),
-                }
+            let (_, current) = session_choice(store?, name).ok()?;
+            (current == *endpoint).then(|| Choice::Profile {
+                name: name.clone(),
+                endpoint: endpoint.clone(),
             })
         }
         None | Some(ChosenConnection::Follow {}) => {
@@ -1112,7 +1163,9 @@ impl DesktopService {
     /// # Errors
     ///
     /// `invalid_request` for an oversized value, a mismatched field, a
-    /// `claude_code` kind, which only the trusted CLI records (ADR-0109), or
+    /// `claude_code` kind, which
+    /// [`settings_add_claude_code`](Self::settings_add_claude_code) records
+    /// with its own native dialogs (ADR-0111), or
     /// a key that is empty, too long, or has a control character; `control` with
     /// core's reason (a bad name, a duplicate, or an endpoint its kind's rule
     /// refuses); `credential_unavailable`,
@@ -1137,11 +1190,12 @@ impl DesktopService {
         {
             return Err(DesktopError::invalid_request("A value is too long."));
         }
-        // Only the trusted CLI records a program connection (ADR-0109), so
-        // the request is refused before its key is read.
+        // A program connection is recorded through its own command, whose
+        // native dialogs choose the program and folder (ADR-0111), so the
+        // request is refused before its key is read.
         if kind.runs_program() {
             return Err(DesktopError::invalid_request(
-                "A Claude Code connection is added with the trusted CLI.",
+                "A Claude Code connection is added with its own program and folder dialogs.",
             ));
         }
         let fixed = kind.fixed_endpoint();

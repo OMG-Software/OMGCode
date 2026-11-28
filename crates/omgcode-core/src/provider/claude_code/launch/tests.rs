@@ -963,3 +963,15 @@ fn a_write_stopped_first_is_not_reported_as_finished() {
     assert!(!race.finish(), "the writer's later finish loses");
     assert!(!race.stop(), "the end is recorded once");
 }
+
+/// The listed efforts are exactly the ones the client passes to `claude`.
+#[test]
+fn the_listed_efforts_are_the_ones_claude_takes() {
+    for effort in crate::provider::ReasoningEffort::ALL {
+        assert_eq!(
+            super::effort_argument(effort).is_some(),
+            super::CLAUDE_CODE_EFFORTS.contains(&effort),
+            "{effort:?}"
+        );
+    }
+}

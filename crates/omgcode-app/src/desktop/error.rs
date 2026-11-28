@@ -214,6 +214,11 @@ impl DesktopError {
 
     /// The operator closed a folder dialog or declined a confirmation. Nothing
     /// changed.
+    /// A settings change refused or stopped for a reason `message` states.
+    pub(crate) fn control_message(message: String) -> Self {
+        Self::new("control", message)
+    }
+
     pub(crate) fn cancelled() -> Self {
         Self::new("cancelled", "No change was made.")
     }

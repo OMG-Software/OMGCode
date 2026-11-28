@@ -86,6 +86,19 @@ export const settingsApi = {
   removeConnection: (revision: number, name: string) =>
     invokeCommand<SettingsOverview>("settings_remove_connection", { revision, name }),
   /**
+   * Records a Claude Code connection (ADR-0111). Rust opens a native file dialog for the claude
+   * program and a native folder dialog for its sign-in folder, then confirms natively; this
+   * window sends only the name.
+   */
+  addClaudeCode: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_add_claude_code", { revision, name }),
+  /** Grants a Claude Code connection's sandbox its folders, Windows only, after a native Yes. */
+  grantClaudeCode: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_grant_claude_code", { revision, name }),
+  /** Revokes a Claude Code connection's folder grants after a native Yes; ends its turns. */
+  revokeClaudeCode: (revision: number, name: string) =>
+    invokeCommand<SettingsOverview>("settings_revoke_claude_code", { revision, name }),
+  /**
    * Signs a connection in with ChatGPT (ADR-0093). Rust confirms natively, opens the system
    * browser, and waits for OpenAI's answer; this window never sees the address or a token.
    */

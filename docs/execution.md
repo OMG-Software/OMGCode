@@ -910,15 +910,18 @@ connection
 ([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
 It is not a run: no model tool starts it, it uses no toolchain profile and no
 workspace container, and the run journal does not record it. Each model
-request of a `chat` or `session compact` that names a `claude_code` profile
-starts one confined process through the same streaming spawn as trusted runs,
+request of a `chat` or `session compact` that names a `claude_code` profile,
+and since ADR-0111 of a desktop session that chose one, starts one confined
+process through the same streaming spawn as trusted runs,
 and a tool turn keeps that process for all its rounds.
 
 - **Container.** On Windows the process runs in the connection's own
   AppContainer, `OMGCode.ClaudeCode.<profile id as 32 hex digits>`, with the
   `internetClient` capability. `omgcode workspace claude-code-grant <name>
   --revision <n>` grants it read-execute on the program's folder, on the
-  folder of the `omgcode` executable that runs the command (the MCP relay),
+  folder of the `omgcode` executable that runs the command (the MCP relay;
+  the desktop `settings` window grants the `omgcode` beside the desktop
+  executable, which its turns use, ADR-0111),
   and on the connection's runtime folder (`claude-code/<profile id>` in
   application storage, created by the grant), and read-write on the sign-in
   folder. Each grant is recorded before and after its ACL change, with the

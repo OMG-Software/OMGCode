@@ -106,11 +106,14 @@ pub enum Command {
     SettingsAddDiscoveredProfiles,
     SettingsAssignToolchainProfile,
     SettingsUnassignToolchainProfile,
+    SettingsAddClaudeCode,
+    SettingsGrantClaudeCode,
+    SettingsRevokeClaudeCode,
 }
 
 impl Command {
     /// All commands, in the order of `command_names.rs`.
-    pub const ALL: [Self; 67] = [
+    pub const ALL: [Self; 70] = [
         Self::AppInfo,
         Self::SessionTree,
         Self::SessionSearch,
@@ -178,6 +181,9 @@ impl Command {
         Self::SettingsAddDiscoveredProfiles,
         Self::SettingsAssignToolchainProfile,
         Self::SettingsUnassignToolchainProfile,
+        Self::SettingsAddClaudeCode,
+        Self::SettingsGrantClaudeCode,
+        Self::SettingsRevokeClaudeCode,
     ];
 
     /// The command name exactly as the frontend invokes it.
@@ -251,6 +257,9 @@ impl Command {
             Self::SettingsAddDiscoveredProfiles => "settings_add_discovered_profiles",
             Self::SettingsAssignToolchainProfile => "settings_assign_toolchain_profile",
             Self::SettingsUnassignToolchainProfile => "settings_unassign_toolchain_profile",
+            Self::SettingsAddClaudeCode => "settings_add_claude_code",
+            Self::SettingsGrantClaudeCode => "settings_grant_claude_code",
+            Self::SettingsRevokeClaudeCode => "settings_revoke_claude_code",
         }
     }
 
@@ -293,7 +302,10 @@ impl Command {
             | Self::SettingsDiscoverToolchains
             | Self::SettingsAddDiscoveredProfiles
             | Self::SettingsAssignToolchainProfile
-            | Self::SettingsUnassignToolchainProfile => WindowLabel::Settings,
+            | Self::SettingsUnassignToolchainProfile
+            | Self::SettingsAddClaudeCode
+            | Self::SettingsGrantClaudeCode
+            | Self::SettingsRevokeClaudeCode => WindowLabel::Settings,
             Self::AppInfo
             | Self::SessionTree
             | Self::SessionSearch
@@ -362,10 +374,10 @@ mod tests {
 
     #[test]
     fn every_command_has_exactly_one_window_and_the_counts_match() {
-        assert_eq!(Command::ALL.len(), 67);
+        assert_eq!(Command::ALL.len(), 70);
         assert_eq!(with_window(WindowLabel::Main).len(), 31);
         assert_eq!(with_window(WindowLabel::Approvals).len(), 3);
-        assert_eq!(with_window(WindowLabel::Settings).len(), 33);
+        assert_eq!(with_window(WindowLabel::Settings).len(), 36);
     }
 
     #[test]
@@ -469,8 +481,8 @@ mod tests {
     #[test]
     fn shared_name_list_has_unique_names_matching_the_enum() {
         let shared: BTreeSet<&str> = COMMAND_NAMES.iter().copied().collect();
-        assert_eq!(COMMAND_NAMES.len(), 67);
-        assert_eq!(shared.len(), 67);
+        assert_eq!(COMMAND_NAMES.len(), 70);
+        assert_eq!(shared.len(), 70);
         let from_enum: Vec<&str> = Command::ALL.iter().map(|c| c.name()).collect();
         assert_eq!(from_enum, COMMAND_NAMES);
     }

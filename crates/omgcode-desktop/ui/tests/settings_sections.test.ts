@@ -762,7 +762,7 @@ describe("advanced section", () => {
     expect(row?.querySelector("input[type=password]")).toBeNull();
   });
 
-  it("names a Claude Code connection as CLI only, offers no key, and can remove it", async () => {
+  it("names a Claude Code connection per session, shows its setup, offers no key, and can remove it", async () => {
     await start(() =>
       overview({
         provider_profiles: [
@@ -773,6 +773,11 @@ describe("advanced section", () => {
             endpoint: null,
             credential_bound: false,
             selectable: false,
+            claude_code: {
+              program: "C:\\Tools\\claude.exe",
+              config_folder: "C:\\Claude\\sign-in",
+              grants: [{ role: "relay", directory: "C:\\OMGCode", state: "active" }],
+            },
           }),
         ],
       }),
@@ -782,8 +787,12 @@ describe("advanced section", () => {
       (candidate) => candidate.querySelector(".row-title")?.textContent === "claude",
     );
     expect(row?.textContent).toContain("Claude Code");
-    expect(row?.textContent).toContain("CLI only");
+    expect(row?.textContent).toContain("Per session");
+    expect(row?.textContent).not.toContain("CLI only");
     expect(row?.textContent).toContain(PROGRAM_CONNECTION_NOTE);
+    expect(row?.textContent).toContain("Program: C:\\Tools\\claude.exe");
+    expect(row?.textContent).toContain("Sign-in folder: C:\\Claude\\sign-in");
+    expect(row?.textContent).toContain("Relay folder: C:\\OMGCode (active)");
     expect(row?.textContent).toContain("the program keeps its own sign-in");
     // OMGCode sends nothing itself, so it is not called hosted or told to take an API key.
     expect(row?.textContent).not.toContain("Hosted");
@@ -794,12 +803,11 @@ describe("advanced section", () => {
       (candidate) => candidate.textContent === "Remove",
     );
     expect(remove).toBeDefined();
-    // The add dropdown never offers the kind: only the trusted CLI records one.
+    // The add dropdown offers the kind; Rust's own dialogs choose its program (ADR-0111).
     const kinds = Array.from(
       root.querySelectorAll<HTMLOptionElement>("#new-connection-provider option"),
     ).map((option) => option.value);
-    expect(kinds.length).toBeGreaterThan(0);
-    expect(kinds).not.toContain("claude_code");
+    expect(kinds).toContain("claude_code");
   });
 
   it("gives each empty group one line", async () => {

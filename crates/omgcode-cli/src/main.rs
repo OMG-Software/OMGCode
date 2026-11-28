@@ -16,8 +16,9 @@ use clap::{Args, Parser, Subcommand};
 use omgcode_app::{
     AppError, ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput,
     ConnectionSource, DEFAULT_TURN_TIMEOUT_SECONDS, LmToken, LocalConnection,
-    MODEL_TOOLS_SUPPORTED, ModelClient, compact_journal, create_session, data_root, read_lm_token,
-    redact_known_secret, resolve_claude_code, resolve_local_connection, run_chat_turn_with_clients,
+    MODEL_TOOLS_SUPPORTED, ModelClient, claude_code_endpoint, compact_journal, create_session,
+    data_root, read_lm_token, redact_known_secret, resolve_claude_code, resolve_local_connection,
+    run_chat_turn_with_clients,
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
 use omgcode_core::control::{ClaudeCodePaths, ProviderKind};
@@ -40,11 +41,6 @@ use std::time::Duration;
 
 /// Whether trusted runs and toolchain profiles exist on this platform.
 const RUN_SUPPORTED: bool = cfg!(any(target_os = "linux", windows));
-
-/// The endpoint label a Claude Code connection records in each request
-/// manifest, followed by the profile name (ADR-0109). It is not a URL and
-/// no request is sent to it.
-const CLAUDE_CODE_ENDPOINT_PREFIX: &str = "claude-code:";
 
 #[derive(Parser)]
 #[command(name = "omgcode", version, about = "OMGCode local core prototype")]
@@ -775,7 +771,7 @@ fn chat_connection(
         let root = data_root(data_dir.map(Path::to_path_buf))?;
         if let Some(paths) = resolve_claude_code(&root, name, &relay_program()?)? {
             let connection = LocalConnection {
-                endpoint: format!("{CLAUDE_CODE_ENDPOINT_PREFIX}{name}"),
+                endpoint: claude_code_endpoint(name),
                 token: None,
                 plan: None,
             };

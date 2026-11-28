@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { neutralise } from "../src/dom";
 import { setInvoker } from "../src/ipc/client";
 import type {
+  ClaudeCodeView,
   ProviderProfileView,
   SettingsOverview,
   WorkspaceSettingsView,
@@ -28,7 +29,11 @@ import {
   WORKSPACES_HELP,
   WRITE_TOOL_LABELS,
 } from "../src/settings/app";
-import { CHATGPT_NOTICE, NO_ENDPOINT_NOTE } from "../src/settings/model_section";
+import {
+  CHATGPT_NOTICE,
+  CLAUDE_CODE_ADD_NOTE,
+  NO_ENDPOINT_NOTE,
+} from "../src/settings/model_section";
 import {
   buttonByText,
   chatDefaultsView,
@@ -215,6 +220,11 @@ function workspaceCard(): HTMLElement {
     throw new Error("No workspace block");
   }
   return found;
+}
+
+/** The labels of every button in `scope`. */
+function buttonLabels(scope: ParentNode): string[] {
+  return Array.from(scope.querySelectorAll("button")).map((each) => each.textContent ?? "");
 }
 
 function rowOf(name: string): HTMLElement {
@@ -1064,6 +1074,7 @@ describe("settings window", () => {
         "deepseek",
         "xai",
         "openai_compatible",
+        "claude_code",
       ]);
       kind.value = "deepseek";
       kind.dispatchEvent(new Event("change"));
@@ -1087,6 +1098,131 @@ describe("settings window", () => {
       expect(rowOf("deep").textContent).toContain("DeepSeek");
       expect(rowOf("deep").textContent).toContain("leave this computer for api.deepseek.com");
       expect(pageHolds(KEY)).toBe(false);
+    });
+
+    it("adds a Claude Code connection by name alone and leaves its program and folder to Rust", async () => {
+      // Given the add form, with a key typed for another provider first.
+      await start(() => choosable({ provider_profiles: [] }), {
+        settings_add_claude_code: () =>
+          choosable({
+            revision: 8,
+            provider_profiles: [
+              cloud({
+                name: "claude",
+                kind: "claude_code",
+                auth: "subscription",
+                endpoint: null,
+                credential_bound: false,
+                selectable: false,
+                claude_code: {
+                  program: "C:\\Tools\\claude.exe",
+                  config_folder: "C:\\Claude\\sign-in",
+                  grants: [],
+                },
+              }),
+            ],
+          }),
+      });
+      go("Model");
+      const kind = picker("New connection provider");
+      kind.value = "deepseek";
+      kind.dispatchEvent(new Event("change"));
+      field("API key").value = KEY;
+
+      // When Claude Code is chosen and added.
+      kind.value = "claude_code";
+      kind.dispatchEvent(new Event("change"));
+      expect(field("New connection endpoint").closest(".field")?.hasAttribute("hidden")).toBe(true);
+      expect(field("API key").closest(".field")?.hasAttribute("hidden")).toBe(true);
+      expect(root.textContent).toContain(CLAUDE_CODE_ADD_NOTE);
+      expect(field("New connection name").value).toBe("claude-code");
+      field("New connection name").value = "claude";
+      buttonByText(root, "Add connection").click();
+      await settle();
+
+      // Then only the revision and the name are sent, and no key or endpoint.
+      expect(ipc.callsTo("settings_add_connection")).toEqual([]);
+      expect(ipc.callsTo("settings_add_claude_code")[0]?.args).toEqual({
+        revision: 7,
+        name: "claude",
+      });
+      expect(rowOf("claude").textContent).toContain("Program: C:\\Tools\\claude.exe");
+      expect(rowOf("claude").textContent).toContain("No folder is granted.");
+      expect(pageHolds(KEY)).toBe(false);
+    });
+
+    it("grants and revokes a Claude Code connection's folders on Windows", async () => {
+      const claude = (grants: ClaudeCodeView) =>
+        cloud({
+          name: "claude",
+          kind: "claude_code",
+          auth: "subscription",
+          endpoint: null,
+          credential_bound: false,
+          selectable: false,
+          claude_code: grants,
+        });
+      const setup = {
+        program: "C:\\Tools\\claude.exe",
+        config_folder: "C:\\Claude\\sign-in",
+      };
+      // Given a connection with no grant.
+      await start(() => choosable({ provider_profiles: [claude({ ...setup, grants: [] })] }), {
+        settings_grant_claude_code: () =>
+          choosable({
+            revision: 8,
+            provider_profiles: [
+              claude({
+                ...setup,
+                grants: [{ role: "relay", directory: "C:\\OMGCode", state: "active" }],
+              }),
+            ],
+          }),
+        settings_revoke_claude_code: () =>
+          choosable({ revision: 9, provider_profiles: [claude({ ...setup, grants: [] })] }),
+      });
+      go("Model");
+      expect(buttonLabels(rowOf("claude"))).not.toContain("Revoke folders");
+
+      // When the folders are granted, then revoked.
+      buttonByText(rowOf("claude"), "Grant folders").click();
+      await settle();
+      expect(ipc.callsTo("settings_grant_claude_code")[0]?.args).toEqual({
+        revision: 7,
+        name: "claude",
+      });
+      expect(rowOf("claude").textContent).toContain("Relay folder: C:\\OMGCode (active)");
+      buttonByText(rowOf("claude"), "Revoke folders").click();
+      await settle();
+
+      // Then each call names the connection and the revision the window read.
+      expect(ipc.callsTo("settings_revoke_claude_code")[0]?.args).toEqual({
+        revision: 8,
+        name: "claude",
+      });
+      expect(rowOf("claude").textContent).toContain("No folder is granted.");
+    });
+
+    it("shows no grant buttons for a Claude Code connection where grants are unsupported", async () => {
+      await start(() =>
+        choosable({
+          container_grants_supported: false,
+          provider_profiles: [
+            cloud({
+              name: "claude",
+              kind: "claude_code",
+              auth: "subscription",
+              endpoint: null,
+              credential_bound: false,
+              selectable: false,
+              claude_code: { program: "/usr/bin/claude", config_folder: "/home/dev/c", grants: [] },
+            }),
+          ],
+        }),
+      );
+      go("Model");
+      expect(rowOf("claude").textContent).toContain("Program: /usr/bin/claude");
+      expect(buttonLabels(rowOf("claude"))).not.toContain("Grant folders");
     });
 
     it("sends an OpenAI-compatible service with its typed address and key", async () => {

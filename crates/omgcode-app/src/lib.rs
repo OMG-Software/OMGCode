@@ -36,10 +36,10 @@ pub use chat::{
 };
 pub use context::{CompactionMeter, ContextMeter, compact_journal, summary_output_tokens};
 pub use credential_source::{
-    ConnectionSource, LmToken, LocalConnection, LocalEndpoint, ProfileCheckError,
-    ProfileConnection, TokenSource, check_profile_selectable, profile_selectability,
-    resolve_claude_code, resolve_local_connection, resolve_local_endpoint,
-    resolve_profile_connection,
+    CLAUDE_CODE_ENDPOINT_PREFIX, ConnectionSource, LmToken, LocalConnection, LocalEndpoint,
+    ProfileCheckError, ProfileConnection, TokenSource, check_profile_selectable,
+    claude_code_endpoint, profile_selectability, resolve_claude_code, resolve_local_connection,
+    resolve_local_endpoint, resolve_profile_connection,
 };
 pub use error::{AppError, ErrorKind};
 pub use model_client::ModelClient;

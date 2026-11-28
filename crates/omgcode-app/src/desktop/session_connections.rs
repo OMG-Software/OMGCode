@@ -46,7 +46,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use omgcode_core::control::{ControlStore, ProviderKind};
+use omgcode_core::control::{
+    ClaudeCodePaths, ControlError, ControlStore, ProviderKind, ProviderProfileStatus,
+};
+use omgcode_core::provider::claude_code::CLAUDE_CODE_EFFORTS;
 use omgcode_core::provider::{ModelEndpoint, ReasoningEffort};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -55,7 +58,8 @@ use super::Inner;
 use super::error::DesktopError;
 use super::preferences::MAX_MODEL_BYTES;
 use crate::{
-    ConnectionSource, LocalConnection, ProfileCheckError, profile_selectability,
+    AppError, CLAUDE_CODE_ENDPOINT_PREFIX, ConnectionSource, ErrorKind, LocalConnection,
+    ProfileCheckError, claude_code_endpoint, profile_selectability, resolve_claude_code,
     resolve_local_connection, resolve_profile_connection,
 };
 
@@ -114,13 +118,22 @@ pub(super) struct SessionRecord {
 /// The reasoning efforts a request to `endpoint` may carry (ADR-0102): every
 /// documented value, or none when the endpoint takes no effort or is not a
 /// valid endpoint. The server still decides which values its model accepts.
+/// A Claude Code label takes the efforts `claude --effort` takes (ADR-0111).
 pub(super) fn reasoning_efforts(endpoint: &str) -> Vec<ReasoningEffort> {
-    if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.takes_reasoning_effort()) {
+    if endpoint.starts_with(CLAUDE_CODE_ENDPOINT_PREFIX) {
+        CLAUDE_CODE_EFFORTS.to_vec()
+    } else if ModelEndpoint::parse(endpoint).is_ok_and(|parsed| parsed.takes_reasoning_effort()) {
         ReasoningEffort::ALL.to_vec()
     } else {
         Vec::new()
     }
 }
+
+/// The model aliases the model box offers for a Claude Code connection
+/// (ADR-0111). `claude` has no model-list request; the program decides what
+/// the signed-in account may use.
+pub(super) const CLAUDE_CODE_MODELS: [&str; 6] =
+    ["sonnet", "opus", "haiku", "fable", "sonnet[1m]", "opus[1m]"];
 
 /// Every recorded choice, by session.
 pub(super) type Records = BTreeMap<Uuid, SessionRecord>;
@@ -399,6 +412,10 @@ pub(super) struct SessionConnection {
     pub(super) connection: LocalConnection,
     /// The profile kind, or `None` for the launch or default endpoint.
     pub(super) kind: Option<ProviderKind>,
+    /// The profile name of a Claude Code connection the session chose
+    /// (ADR-0111). Its `connection` holds the label and no token; the turn
+    /// resolves the connection's paths through core.
+    pub(super) claude_code: Option<String>,
 }
 
 impl Inner {
@@ -454,6 +471,7 @@ impl Inner {
             return Ok(SessionConnection {
                 connection,
                 kind: None,
+                claude_code: None,
             });
         }
         let (records, _) = self.session_records();
@@ -473,6 +491,7 @@ impl Inner {
                 Ok(SessionConnection {
                     connection,
                     kind: None,
+                    claude_code: None,
                 })
             }
             Some(ChosenConnection::Profile { name, endpoint }) => {
@@ -489,7 +508,11 @@ impl Inner {
             .token
             .resolve_with_kind(&self.data_root, &self.endpoint)
             .map_err(|error| DesktopError::from_app(&error))?;
-        Ok(SessionConnection { connection, kind })
+        Ok(SessionConnection {
+            connection,
+            kind,
+            claude_code: None,
+        })
     }
 
     /// Re-resolve a session's recorded profile and compare its endpoint.
@@ -498,6 +521,9 @@ impl Inner {
         name: &str,
         recorded: &str,
     ) -> Result<SessionConnection, DesktopError> {
+        if recorded.starts_with(CLAUDE_CODE_ENDPOINT_PREFIX) {
+            return self.resolve_recorded_claude_code(name, recorded);
+        }
         match profile_selectability(&self.data_root, name) {
             Ok(()) => {}
             Err(ProfileCheckError::NotSelectable(_)) => {
@@ -519,7 +545,61 @@ impl Inner {
                 plan: resolved.plan,
             },
             kind: Some(resolved.kind),
+            claude_code: None,
         })
+    }
+
+    /// The checked paths of the Claude Code connection `name` for one turn
+    /// (ADR-0111), with this process's relay. Core checks the program, the
+    /// folders, and on Windows every grant; nothing starts here.
+    ///
+    /// # Errors
+    ///
+    /// `credential` with `claude_code_unusable` when there is no relay or
+    /// core refuses the connection, `session_connection_stale` when `name`
+    /// is no longer a Claude Code connection, and the settings store's
+    /// `credential` errors.
+    pub(super) fn claude_code_paths(&self, name: &str) -> Result<ClaudeCodePaths, DesktopError> {
+        let relay = self.claude_code_relay.as_deref().ok_or_else(|| {
+            DesktopError::from_app(&AppError::new(
+                ErrorKind::Credential,
+                "claude_code_unusable: no omgcode executable was found beside the desktop application to serve as the MCP relay",
+            ))
+        })?;
+        resolve_claude_code(&self.data_root, name, relay)
+            .map_err(|error| DesktopError::from_app(&error))?
+            .ok_or_else(DesktopError::session_connection_stale)
+    }
+
+    /// A session's recorded Claude Code connection (ADR-0111): the profile
+    /// must still be a Claude Code connection with the recorded label. Its
+    /// program, folders, and grants are checked when the turn resolves its
+    /// paths, before any process starts.
+    fn resolve_recorded_claude_code(
+        &self,
+        name: &str,
+        recorded: &str,
+    ) -> Result<SessionConnection, DesktopError> {
+        let store = self.open_control()?;
+        let current = store
+            .as_ref()
+            .and_then(|store| session_choice(store, name).ok())
+            .map(|(status, endpoint)| (status.profile().kind(), endpoint));
+        drop(store);
+        match current {
+            Some((ProviderKind::ClaudeCode, endpoint)) if endpoint == recorded => {
+                Ok(SessionConnection {
+                    connection: LocalConnection {
+                        endpoint,
+                        token: None,
+                        plan: None,
+                    },
+                    kind: Some(ProviderKind::ClaudeCode),
+                    claude_code: Some(name.to_owned()),
+                })
+            }
+            _ => Err(DesktopError::session_connection_stale()),
+        }
     }
 }
 
@@ -531,6 +611,33 @@ pub(super) fn recorded_endpoint(store: &ControlStore, name: &str) -> Option<Stri
     ModelEndpoint::parse(endpoint.as_str())
         .ok()
         .map(|parsed| parsed.as_str().to_owned())
+}
+
+/// The profile `name` and the endpoint text a session records for it, when a
+/// session may choose it now (ADR-0071, ADR-0111): a profile core lets be
+/// the active connection, with [`recorded_endpoint`], or a recorded Claude
+/// Code connection, with its label. Only a session can choose a Claude Code
+/// connection; core still refuses it as the active one.
+///
+/// # Errors
+///
+/// Core's `UnknownProvider` or `ProviderRefused`, and `ProviderRefused` for
+/// an endpoint the shared rule no longer accepts.
+pub(super) fn session_choice<'store>(
+    store: &'store ControlStore,
+    name: &str,
+) -> Result<(&'store ProviderProfileStatus, String), ControlError> {
+    let status = store
+        .provider_profile(name)
+        .ok_or(ControlError::UnknownProvider)?;
+    if status.profile().kind() == ProviderKind::ClaudeCode {
+        return Ok((status, claude_code_endpoint(status.profile().name())));
+    }
+    let status = store.check_provider_selectable(name)?;
+    let endpoint = recorded_endpoint(store, name).ok_or(ControlError::ProviderRefused(
+        "the recorded endpoint cannot be used",
+    ))?;
+    Ok((status, endpoint))
 }
 
 #[cfg(test)]

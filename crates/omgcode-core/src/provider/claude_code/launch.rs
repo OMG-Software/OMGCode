@@ -1883,6 +1883,16 @@ fn system_paths() -> Result<Vec<PathBuf>, ProviderError> {
     }
 }
 
+/// The reasoning efforts `claude --effort` takes, in order (ADR-0109,
+/// ADR-0111). [`ClaudeCodeClient::new`] refuses every other effort.
+pub const CLAUDE_CODE_EFFORTS: [ReasoningEffort; 5] = [
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::XHigh,
+    ReasoningEffort::Max,
+];
+
 /// The `--effort` value for an effort Claude Code takes.
 const fn effort_argument(effort: ReasoningEffort) -> Option<&'static str> {
     match effort {

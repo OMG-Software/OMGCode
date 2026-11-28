@@ -11,13 +11,14 @@
 
 use omgcode_app::desktop::{
     ApiKeySetRequest, ApiKeyText, ChatBudgetsDto, ChatBudgetsSaveRequest, ChatGptRequest,
-    ChatGptSignOutResult, ConnectionAddRequest, ConnectionRemoveRequest, ConnectionSelectRequest,
-    ContainerAccessChoice, ContainerGrantRequest, ContainerRevokeRequest,
-    DiscoveredProfilesRequest, EnvironmentEntry, NewConnectionKind, PackageProfileAddRequest,
-    PermissionFlags, PermissionsChangeRequest, ProfileAssignmentRequest, ProfileRemoveRequest,
-    SettingsOverview, SettingsRevisionRequest, SkillChoice, SkillRemoveRequest, SkillStateRequest,
-    ToolchainDiscovery, ToolchainDiscoveryRequest, ToolchainProfileAddRequest,
-    WebHostChangeRequest, WorkspaceInstructionsRequest, WorkspaceRevisionRequest, discovery_host,
+    ChatGptSignOutResult, ClaudeCodeAddRequest, ClaudeCodeConnectionRequest, ConnectionAddRequest,
+    ConnectionRemoveRequest, ConnectionSelectRequest, ContainerAccessChoice, ContainerGrantRequest,
+    ContainerRevokeRequest, DiscoveredProfilesRequest, EnvironmentEntry, NewConnectionKind,
+    PackageProfileAddRequest, PermissionFlags, PermissionsChangeRequest, ProfileAssignmentRequest,
+    ProfileRemoveRequest, SettingsOverview, SettingsRevisionRequest, SkillChoice,
+    SkillRemoveRequest, SkillStateRequest, ToolchainDiscovery, ToolchainDiscoveryRequest,
+    ToolchainProfileAddRequest, WebHostChangeRequest, WorkspaceInstructionsRequest,
+    WorkspaceRevisionRequest, discovery_host,
 };
 use tauri::Webview;
 use uuid::Uuid;
@@ -752,6 +753,82 @@ pub async fn settings_grant_container_folder(
     };
     blocking(&state, move |service| {
         service.settings_grant_container_folder(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. Opens a native file dialog for the `claude` program and a
+/// native folder dialog for its sign-in folder, then, after a native
+/// confirmation that names both, records a Claude Code connection
+/// (ADR-0111). The webview sends only the revision and the name.
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`invalid_request`,
+/// `cancelled`, `stale_revision`, `settings_change_running`, `busy`, or
+/// `control` with core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_add_claude_code(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsAddClaudeCode, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ClaudeCodeAddRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_add_claude_code(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only, Windows only. After a native confirmation that names the
+/// four folders, grants a Claude Code connection's container what its process
+/// needs, as `omgcode workspace claude-code-grant` does (ADR-0111).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`unsupported_platform`,
+/// `invalid_request`, `cancelled`, `stale_revision`,
+/// `container_access_failed`, or `control` with core's reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_grant_claude_code(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsGrantClaudeCode, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ClaudeCodeConnectionRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_grant_claude_code(request, &prompt)
+    })
+    .await
+}
+
+/// `settings` only. After a native confirmation, revokes every grant of a
+/// Claude Code connection and waits up to 30 seconds for its running turns to
+/// end, as `omgcode workspace claude-code-revoke` does (ADR-0111).
+///
+/// # Errors
+///
+/// `forbidden_window`, or the service's error (`cancelled`,
+/// `stale_revision`, `container_access_failed`, or `control` with core's
+/// reason).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn settings_revoke_claude_code(
+    webview: Webview,
+    state: Service<'_>,
+    revision: u64,
+    name: String,
+) -> Result<SettingsOverview, CommandError> {
+    authorize(Command::SettingsRevokeClaudeCode, webview.label())?;
+    let prompt = NativePrompt::new(webview.window());
+    let request = ClaudeCodeConnectionRequest { revision, name };
+    blocking(&state, move |service| {
+        service.settings_revoke_claude_code(request, &prompt)
     })
     .await
 }

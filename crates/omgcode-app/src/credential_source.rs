@@ -431,6 +431,18 @@ pub fn profile_selectability(data_root: &Path, name: &str) -> Result<(), Profile
         })
 }
 
+/// The start of the endpoint label a Claude Code connection records in each
+/// request manifest and in a desktop session's choice, followed by the
+/// profile name (ADR-0109, ADR-0111). It is not a URL and no request is sent
+/// to it.
+pub const CLAUDE_CODE_ENDPOINT_PREFIX: &str = "claude-code:";
+
+/// The endpoint label of the Claude Code connection `name`.
+#[must_use]
+pub fn claude_code_endpoint(name: &str) -> String {
+    format!("{CLAUDE_CODE_ENDPOINT_PREFIX}{name}")
+}
+
 /// Resolve a recorded `claude_code` connection for one turn (ADR-0109), or
 /// `None` when `name` is another kind of profile. `relay_program` is the
 /// `omgcode` executable that will serve as the MCP relay; on Windows the
@@ -466,11 +478,11 @@ fn profile_connection(
     name: &str,
 ) -> Result<LocalConnection, AppError> {
     // A Claude Code connection has no endpoint or token; only the CLI's
-    // `chat` and `session compact` resolve it, through
-    // [`resolve_claude_code`] (ADR-0109).
+    // `chat` and `session compact` and a desktop session's own choice
+    // resolve it, through [`resolve_claude_code`] (ADR-0109, ADR-0111).
     if local_adapter(&control, name) == ProviderKind::ClaudeCode {
         return Err(credential_error(
-            "claude_code_cli_only: a Claude Code connection runs only through `omgcode chat --provider-profile` and `omgcode session compact --provider-profile`".to_owned(),
+            "claude_code_cli_only: a Claude Code connection runs only through `omgcode chat --provider-profile`, `omgcode session compact --provider-profile`, and a desktop session's own provider choice".to_owned(),
         ));
     }
     if is_plan_profile(&control, name) {

@@ -19,6 +19,7 @@ pub mod policy;
 pub mod shutdown;
 pub mod windows;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -114,8 +115,25 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
         endpoint,
         token_source,
         stream: args.stream,
+        claude_code_relay: claude_code_relay(),
     })
     .map_err(|error| format!("{}: {}", error.code(), error.message()))
+}
+
+/// The `omgcode` executable in this executable's folder, which a Claude Code
+/// turn runs as its MCP relay (ADR-0111), or `None` when there is none. Every
+/// release archive ships both executables in one folder, so
+/// `omgcode workspace claude-code-grant` run from it grants this folder.
+fn claude_code_relay() -> Option<PathBuf> {
+    let desktop = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()?;
+    let relay = desktop.parent()?.join(if cfg!(windows) {
+        "omgcode.exe"
+    } else {
+        "omgcode"
+    });
+    relay.is_file().then_some(relay)
 }
 
 /// Validate an endpoint the way a chat turn would. The clients are discarded;
@@ -218,6 +236,9 @@ fn run_app(service: Arc<DesktopService>) -> ExitCode {
             commands::settings::settings_add_package_profile,
             commands::settings::settings_remove_package_profile,
             commands::settings::settings_grant_container_folder,
+            commands::settings::settings_add_claude_code,
+            commands::settings::settings_grant_claude_code,
+            commands::settings::settings_revoke_claude_code,
             commands::settings::settings_revoke_container_grant,
             commands::settings::settings_add_web_fetch_host,
             commands::settings::settings_remove_web_fetch_host,

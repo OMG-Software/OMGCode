@@ -72,6 +72,7 @@ fn service(fixture: &Fixture) -> DesktopService {
         endpoint: unused_endpoint(),
         token_source: TokenSource::Active,
         stream: false,
+        claude_code_relay: None,
     })
     .expect("open desktop service")
 }
@@ -376,7 +377,7 @@ fn a_refused_add_records_nothing_and_never_repeats_the_key() {
             KEY,
         ),
         (
-            "a Claude Code connection, which only the trusted CLI records",
+            "a Claude Code connection, which its own command records (ADR-0111)",
             json!({"name": "c", "kind": "claude_code", "endpoint": "https://provider-api.example.org/v1", "api_key": KEY}),
             KEY,
         ),

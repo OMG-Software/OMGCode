@@ -1,8 +1,9 @@
 //! Native dialogs for settings changes (ADR-0059 decisions 4 and 5, ADR-0060).
 //!
 //! [`NativePrompt`] implements the service's [`SettingsPrompt`] with the
-//! operating system's folder picker and message box through `rfd`, called from
-//! Rust only. No webview can open, answer, or read these dialogs: there is no
+//! operating system's folder and file pickers and message box through `rfd`,
+//! called from Rust only. No webview can open, answer, or read these dialogs:
+//! there is no
 //! dialog command and no `dialog:` permission, and the chosen path goes from the
 //! dialog to core without passing through any webview.
 //!
@@ -29,7 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
-use omgcode_app::desktop::{Confirmation, FolderPurpose, SettingsPrompt};
+use omgcode_app::desktop::{Confirmation, FilePurpose, FolderPurpose, SettingsPrompt};
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use tauri::Window;
 
@@ -56,6 +57,23 @@ impl SettingsPrompt for NativePrompt {
                 dialog = dialog.set_directory(start);
             }
             dialog.pick_folder()
+        })
+        .flatten()
+    }
+
+    fn pick_file(&self, purpose: FilePurpose, start: Option<&Path>) -> Option<PathBuf> {
+        on_dialog_thread(|| {
+            let mut dialog = FileDialog::new()
+                .set_title(purpose.title())
+                .set_parent(&self.parent);
+            // Core accepts only an `.exe` as the program on Windows.
+            if cfg!(windows) {
+                dialog = dialog.add_filter("Programs", &["exe"]);
+            }
+            if let Some(start) = start {
+                dialog = dialog.set_directory(start);
+            }
+            dialog.pick_file()
         })
         .flatten()
     }

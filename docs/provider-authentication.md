@@ -22,7 +22,7 @@ billing or defer it.
 | OpenAI API | User API key; API-account billing | Prototype through the Chat Completions adapter at the fixed endpoint `https://api.openai.com/v1` (ADR-0092); API key only; no request was verified with a real key |
 | ChatGPT subscription | Provider-supported browser sign-in and permission to use the user's plan | Prototype ([ChatGPT sign-in](#chatgpt-sign-in-adr-0093)): browser sign-in with PKCE, state, nonce, and ID-token checks, tokens in protected OS storage, and chat through the Responses API, tested against loopback mock servers; one real sign-in, model list, text turn, and two read and list tool turns were observed (ADR-0096, ADR-0097), but other plan usage is not verified and the requirement stays open |
 | Anthropic API | User API key; API-account billing | Prototype through Anthropic's OpenAI SDK compatibility layer at `https://api.anthropic.com/v1` (ADR-0092), which Anthropic documents for testing, not production; API key only; no request was verified with a real key |
-| Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved. A [Claude Code connection](#claude-code-connection-adr-0109) drives the operator's own signed-in `claude` CLI from the trusted CLI, as personal use that is not evidence of approval; OMGCode handles no Claude credential, and no signed-in turn ran inside its sandbox |
+| Claude subscription | Provider-approved subscription sign-in and usage | Required; approval and integration route unresolved. A [Claude Code connection](#claude-code-connection-adr-0109) drives the operator's own signed-in `claude` CLI from the trusted CLI and a desktop session's own provider choice (ADR-0111), as personal use that is not evidence of approval; OMGCode handles no Claude credential, and no signed-in turn ran inside its sandbox |
 | Ollama Local | Explicit local server profile; no token | Local loopback chat prototype through Ollama's OpenAI-compatible `/v1` API, tested with Ollama 0.40.16 on Windows (0.44.0, ADR-0064); an `ollama_local` profile records the endpoint, has authentication `none`, and can be chosen in the desktop `settings` window; authenticated Ollama servers and platform qualification pending |
 | Ollama Cloud | Provider cloud credentials | Direct connection to the fixed endpoint `https://ollama.com/v1` with a stored API key bound to an `ollama_cloud` profile (ADR-0071); the model list shape was observed, the chat, stream, and tool-call shapes were not verified with a real key |
 | OpenRouter | User API key and explicit upstream routing | Prototype at `https://openrouter.ai/api/v1` (ADR-0092); the model list shape was observed without a key; upstream routing preferences are not sent; API key only; no request was verified with a real key |
@@ -160,7 +160,8 @@ and an authentication mode. Kinds are `lm_studio`, `ollama_local`,
 `ollama_cloud`, `anthropic`, `openai`, `open_router`, and, since ADR-0092,
 `google`, `meta`, `moonshot`, `tencent`, `thinking_machines`, `minimax`,
 `z_ai`, `deepseek`, `xai`, and `openai_compatible`, and, since ADR-0109,
-`claude_code`, which only `workspace claude-code-add` records
+`claude_code`, which only `workspace claude-code-add` and, since ADR-0111,
+the desktop `settings` window record
 ([below](#claude-code-connection-adr-0109)). Modes are
 `subscription`, `api_key`, and `none`. Subscription is accepted only for
 OpenAI, Anthropic, and Claude Code, and the `claude_code` kind accepts only
@@ -638,7 +639,11 @@ Anthropic approval, and the Claude subscription requirement stays open.
   program's folder, on the running `omgcode` executable's folder (the MCP
   relay), and on the connection's runtime folder in application storage,
   and read-write on the sign-in folder. `workspace claude-code-revoke NAME`
-  revokes every grant and deletes the container profile; a profile with
+  revokes every grant and deletes the container profile;
+  since ADR-0111 the desktop `settings` window adds a connection through a
+  native file dialog, a native folder dialog, and a native confirmation, and
+  grants and revokes the same folders, using the `omgcode` executable beside
+  the desktop application as the relay; a profile with
   grants cannot be removed. Revoking, and removing the connection with
   `provider-profile-remove` or the `settings` window, ends its running turns
   and waits up to 30 seconds for their processes to end. Each turn writes
@@ -669,10 +674,18 @@ Anthropic approval, and the Claude subscription requirement stays open.
   recorded folder identities and, on Windows, each grant, and checks that
   neither its program folder nor its relay folder overlaps another
   connection's sign-in folder, on Linux too; a settings state that records
-  such a folder while the turn starts or runs withdraws it. Every other route,
-  including the desktop shell, the active selection, and `models`, refuses
-  the profile with `claude_code_cli_only`. A request manifest records the
-  endpoint label `claude-code:NAME`.
+  such a folder while the turn starts or runs withdraws it. Since ADR-0111 a
+  desktop session can choose the connection in the `main` window's model
+  box, after a native confirmation that names the program and the sign-in
+  folder, and its turns resolve it the same way, with the `omgcode`
+  executable beside the desktop application as the relay; without one the
+  turn fails with `claude_code_unusable` and starts nothing. The model box
+  offers the aliases `sonnet`, `opus`, `haiku`, `fable`, `sonnet[1m]`, and
+  `opus[1m]`, and the efforts `low` to `max`. Every other route, including
+  the active selection, the desktop's `--provider-profile` launch argument,
+  and `models`, refuses the profile with `claude_code_cli_only`. A request
+  manifest records the endpoint label `claude-code:NAME`, which a desktop
+  session's record also keeps.
 - **The child.** Each run starts `claude -p` in the connection's sandbox
   with an environment built from nothing: no `ANTHROPIC_*` or `CLAUDE_*`
   variable of OMGCode's own environment reaches it, and
@@ -701,7 +714,8 @@ Anthropic approval, and the Claude subscription requirement stays open.
   handshake, and sign-in failure were observed directly on Windows ([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
 - **Not verified.** No signed-in turn of the real `claude` ran on either
   platform, Linux ran only under WSL 2, and rate-limit and long-turn shapes
-  were not observed.
+  were not observed. No desktop turn of the real or the fake `claude` ran;
+  the desktop's service tests stop before a process starts (ADR-0111).
 
 ## Stored credential use (0.30.0)
 
