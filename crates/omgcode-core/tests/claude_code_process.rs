@@ -160,7 +160,11 @@ impl Scene {
     fn new() -> Self {
         let temporary = TempDir::new().expect("temporary directory");
         let base = temporary.path();
-        let data = base.join("application-data");
+        // A data root shaped like an operator's own, so a socket kept in the
+        // runtime folder could not fit `sun_path` on Linux.
+        let home = base.join("home").join("operator");
+        let data = home.join(".local").join("share").join("omgcode");
+        fs::create_dir_all(data.parent().expect("data parent")).expect("home folders");
         let root = base.join("development-root");
         let workspace = root.join("workspace");
         let tools = base.join("tools");
@@ -387,6 +391,22 @@ fn a_tool_call_runs_through_the_turn_runtime() {
     .expect("runtime")
     .run(&mut model, "SCENARIO:tool", "", manifest())
     .unwrap_or_else(|error| panic!("turn: {error}; {}", fake_claude::diagnosis(&scene.sign_in)));
+    // The relay's socket fits because it lives in a short private folder
+    // (ADR-0109 decision 6): one in this runtime folder would not.
+    #[cfg(target_os = "linux")]
+    {
+        let in_runtime = scene
+            .config
+            .runtime_folder
+            .join("turns")
+            .join("0".repeat(32))
+            .join("relay.sock");
+        assert!(
+            in_runtime.as_os_str().len() >= 108,
+            "the data root is too short to need the private folder: {}",
+            in_runtime.display()
+        );
+    }
     assert_eq!(report.tool_calls, 1);
     assert_eq!(report.rounds, 2);
     assert!(report.reply.starts_with("listed:"), "{}", report.reply);

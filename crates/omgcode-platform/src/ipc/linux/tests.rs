@@ -11,18 +11,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::ipc::{IpcError, ListenerTarget, LocalListener, LocalStream, connect};
+use crate::ipc::{IpcError, ListenerTarget, LocalListener, LocalStream, ShutdownHandle, connect};
 
 const LONG: Duration = Duration::from_secs(30);
 const PAYLOAD_BYTES: usize = 512 * 1024;
-/// Grace period after a thread reports that it is about to block. User space
-/// cannot observe that a kernel read or accept is pending without a hook in
-/// production code, so a test signals immediately before the blocking call
-/// and then waits this long for the thread to reach it. A thread that is
-/// slower only turns the test into one that raises the signal before the
-/// operation starts, which production code also handles; the pre-raised case
-/// has its own assertion.
-const PENDING_GRACE: Duration = Duration::from_millis(100);
 
 fn private_directory() -> tempfile::TempDir {
     let directory = tempfile::Builder::new()
@@ -56,41 +48,92 @@ fn refused(result: Result<LocalListener, IpcError>) -> &'static str {
     }
 }
 
-fn join_within<T>(handle: JoinHandle<T>, limit: Duration) -> T {
+/// Whether `handle` finished within `limit`.
+fn finished_within<T>(handle: &JoinHandle<T>, limit: Duration) -> bool {
     let deadline = Instant::now() + limit;
     while !handle.is_finished() {
-        assert!(
-            Instant::now() < deadline,
-            "the thread did not finish in {limit:?}"
-        );
+        if Instant::now() >= deadline {
+            return false;
+        }
         thread::sleep(Duration::from_millis(5));
     }
+    true
+}
+
+fn join_within<T>(handle: JoinHandle<T>, limit: Duration) -> T {
+    assert!(
+        finished_within(&handle, limit),
+        "the thread did not finish in {limit:?}"
+    );
     handle.join().expect("thread panicked")
 }
 
-/// Accept on another thread. The receiver gets one message immediately before
-/// the blocking `accept` call.
+/// Join `handle` within `limit`. A thread that overruns is not left holding
+/// the connection: `shutdown` ends its blocked reads and writes, and the
+/// peer's, and the thread is joined within a second bound before the test
+/// fails.
+fn join_or_shut<T>(handle: JoinHandle<T>, limit: Duration, shutdown: &ShutdownHandle) -> T {
+    if finished_within(&handle, limit) {
+        return handle.join().expect("thread panicked");
+    }
+    let shut = shutdown.shutdown();
+    let ended = finished_within(&handle, LONG);
+    if ended {
+        let _ = handle.join();
+    }
+    panic!("the thread did not finish in {limit:?}; shutdown: {shut:?}; it then ended: {ended}");
+}
+
+/// The calling thread's kernel id: `/proc/thread-self` links to
+/// `<pid>/task/<tid>`.
+fn thread_id() -> u32 {
+    fs::read_link("/proc/thread-self")
+        .ok()
+        .and_then(|link| link.file_name()?.to_str()?.parse().ok())
+        .expect("this thread's id")
+}
+
+/// Whether thread `id` of this process is asleep in the kernel: the state
+/// field of its `stat`, after the parenthesised name, is `S`. A thread that
+/// already ended is not.
+fn asleep(id: u32) -> bool {
+    fs::read_to_string(format!("/proc/self/task/{id}/stat")).is_ok_and(|stat| {
+        stat.rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            == Some("S")
+    })
+}
+
+/// Wait, bounded, for a thread that sent its id immediately before a
+/// blocking call to sleep in the kernel. Nothing between the send and the
+/// call sleeps, so the call is then in progress, not about to start.
+fn await_blocked(pending: &Receiver<u32>) {
+    let id = pending
+        .recv_timeout(LONG)
+        .expect("the thread never reached its blocking call");
+    let deadline = Instant::now() + LONG;
+    while !asleep(id) {
+        assert!(Instant::now() < deadline, "the thread never blocked");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Accept on another thread, which sends its id immediately before the
+/// blocking `accept` call.
 fn accept_in_thread(
     listener: LocalListener,
     cancel: &CancelSignal,
     wait: Duration,
-) -> (JoinHandle<Result<LocalStream, IpcError>>, Receiver<()>) {
+) -> (JoinHandle<Result<LocalStream, IpcError>>, Receiver<u32>) {
     let cancel = cancel.clone();
     let (started, pending) = mpsc::channel();
     let handle = thread::spawn(move || {
-        started.send(()).expect("report that accept is starting");
+        started
+            .send(thread_id())
+            .expect("report that accept is starting");
         listener.accept(Instant::now() + wait, &cancel)
     });
     (handle, pending)
-}
-
-/// Wait, bounded, for the signal sent just before a blocking call, then give
-/// the call [`PENDING_GRACE`] to start blocking.
-fn await_pending(pending: &Receiver<()>) {
-    pending
-        .recv_timeout(LONG)
-        .expect("the thread never reached its blocking call");
-    thread::sleep(PENDING_GRACE);
 }
 
 fn client(address: &OsStr) -> JoinHandle<LocalStream> {
@@ -213,16 +256,17 @@ fn a_same_user_client_exchanges_lines_both_ways() {
     let stream = listener
         .accept(Instant::now() + LONG, &CancelSignal::new())
         .expect("accept");
-    let (reader, mut writer, _shutdown) = stream.split().expect("split");
-    // A read that never completes must fail the test, not hang it.
+    let (reader, mut writer, shutdown) = stream.split().expect("split");
+    // A read that never completes fails the test, after shutdown released
+    // both ends.
     let reading = thread::spawn(move || {
         let mut line = String::new();
         BufReader::new(reader).read_line(&mut line).map(|_| line)
     });
-    let line = join_within(reading, LONG).expect("read");
+    let line = join_or_shut(reading, LONG, &shutdown).expect("read");
     assert_eq!(line, "hello\n");
     writer.write_all(b"world\n").expect("write");
-    assert_eq!(join_within(connecting, LONG), "world\n");
+    assert_eq!(join_or_shut(connecting, LONG, &shutdown), "world\n");
 }
 
 #[test]
@@ -241,21 +285,27 @@ fn a_blocked_read_does_not_block_a_write_on_the_same_stream() {
     let stream = listener
         .accept(Instant::now() + LONG, &CancelSignal::new())
         .expect("accept");
-    let (reader, mut writer, _shutdown) = stream.split().expect("split");
+    let (reader, mut writer, shutdown) = stream.split().expect("split");
     // The peer answers only after the whole payload, so this read is blocked
     // for the whole write.
     let (started, pending) = mpsc::channel();
     let reading = thread::spawn(move || {
         let mut line = String::new();
-        started.send(()).expect("report that the read is starting");
+        started
+            .send(thread_id())
+            .expect("report that the read is starting");
         BufReader::new(reader).read_line(&mut line).map(|_| line)
     });
-    // The write starts only once the read thread is at its blocking call.
-    await_pending(&pending);
+    // The write starts only once the read is blocked in the kernel, so a
+    // stream that serialised reads and writes would hold the write here.
+    await_blocked(&pending);
     let writing = thread::spawn(move || writer.write_all(&vec![b'x'; PAYLOAD_BYTES]));
-    join_within(writing, LONG).expect("the write finished");
-    assert_eq!(join_within(reading, LONG).expect("read"), "done\n");
-    join_within(connecting, LONG);
+    join_or_shut(writing, LONG, &shutdown).expect("the write finished");
+    assert_eq!(
+        join_or_shut(reading, LONG, &shutdown).expect("read"),
+        "done\n"
+    );
+    join_or_shut(connecting, LONG, &shutdown);
 }
 
 #[test]
@@ -271,12 +321,14 @@ fn shutdown_ends_a_blocked_read_and_the_peer_sees_the_close() {
     let (started, pending) = mpsc::channel();
     let reading = thread::spawn(move || {
         let mut buffer = [0_u8; 16];
-        started.send(()).expect("report that the read is starting");
+        started
+            .send(thread_id())
+            .expect("report that the read is starting");
         reader.read(&mut buffer)
     });
-    // Shutdown also ends a read that starts later; the signal and grace make
-    // the interrupted-read case the one that normally runs.
-    await_pending(&pending);
+    // Shutdown runs only once the read is blocked in the kernel, so it is
+    // what ends that read; a call after shutdown is checked below.
+    await_blocked(&pending);
     shutdown.shutdown().expect("shutdown");
     assert_eq!(
         join_within(reading, Duration::from_secs(10)).expect("read"),
@@ -312,7 +364,7 @@ fn accept_stops_when_cancelled() {
     let directory = private_directory();
     let cancel = CancelSignal::new();
     let (accepting, pending) = accept_in_thread(bind_in(directory.path()), &cancel, LONG);
-    await_pending(&pending);
+    await_blocked(&pending);
     let started = Instant::now();
     cancel.cancel();
     let accepted = join_within(accepting, Duration::from_secs(10));

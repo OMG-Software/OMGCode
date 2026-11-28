@@ -114,6 +114,25 @@ const GRANTED_ACCESS: u32 = CLIENT_ACCESS | FILE_READ_ATTRIBUTES | SYNCHRONIZE;
 /// Largest token SID information accepted, in bytes.
 const MAX_TOKEN_INFORMATION_BYTES: u32 = 1024;
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: run on this thread when one of its reads, writes, or
+    /// connects reports `ERROR_IO_PENDING`, so a test can act while the
+    /// operation is pending in the kernel rather than before it starts.
+    static ON_PENDING: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Tell this thread's test hook, if any, that its operation is pending.
+fn report_pending() {
+    #[cfg(test)]
+    ON_PENDING.with_borrow_mut(|hook| {
+        if let Some(hook) = hook.as_mut() {
+            hook();
+        }
+    });
+}
+
 fn last_code() -> u32 {
     io::Error::last_os_error()
         .raw_os_error()
@@ -197,6 +216,7 @@ fn complete(pipe: &Pipe, operation: &OVERLAPPED, start_error: Option<u32>) -> Re
     match start_error {
         None => {}
         Some(ERROR_IO_PENDING) => {
+            report_pending();
             if pipe.is_shut() {
                 // SAFETY: the handle is open while `pipe` lives and `operation`
                 // names an operation started on it. A failure means it already
@@ -440,7 +460,7 @@ impl Listener {
                 // when it connects before `accept` starts.
                 ERROR_PIPE_CONNECTED => return Ok(true),
                 ERROR_NO_DATA => return Ok(false),
-                ERROR_IO_PENDING => {}
+                ERROR_IO_PENDING => report_pending(),
                 code => return Err(IpcError::os("wait for a client", code_error(code))),
             }
             self.wait_for_connection(&operation, deadline, cancel)?;
