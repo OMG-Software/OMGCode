@@ -945,7 +945,10 @@ and a tool turn keeps that process for all its rounds.
   and is then closed. Standard output is read as bounded stream-json lines;
   nothing it says is trusted. The tool channel is a named pipe (Windows) or a
   socket in a `0700` per-turn folder (Linux) that the relay reaches after a
-  per-turn nonce, not an inherited handle.
+  per-turn nonce, not an inherited handle. The Linux folder has a random
+  name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
+  that is unset, relative, or too long, because a socket path must fit in
+  107 bytes and one beneath application storage does not.
 
 ### Toolchain profiles
 

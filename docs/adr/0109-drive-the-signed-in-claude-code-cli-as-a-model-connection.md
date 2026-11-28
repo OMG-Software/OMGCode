@@ -164,7 +164,11 @@ Haiku request with one tool call.
    time. On Windows the channel is a named pipe that admits the user and the
    connection's container. Its mandatory label is Low with no-write-up, and
    the server accepts a client only after the client's token shows that
-   container's SID. On Linux it is a socket in a 0700 per-turn folder. All
+   container's SID. On Linux it is a socket in a per-turn `0700` folder
+   with a random name, created exclusively under `XDG_RUNTIME_DIR`, or under
+   `/tmp` when that variable is unset, relative, or too long. A socket path
+   must fit in the 107 bytes of `sun_path`, and one beneath the runtime
+   folder in application storage does not. All
    MCP handling stays in the trusted process. It answers `server/discover`
    with `-32601` so the observed client falls back to `initialize` at
    `2025-11-25`, offers only `tools`, and never sends a request to the

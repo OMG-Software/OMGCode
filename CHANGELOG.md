@@ -29,7 +29,9 @@ Changes are recorded here before a release version is assigned.
   offered tool, or the tree is ended with `claude_code_lockdown`. OMGCode's
   tools reach `claude` only through the hidden `omgcode mcp-relay`
   subcommand, which copies MCP bytes after a per-turn nonce over a named pipe
-  that admits only the connection's container (a `0700` socket on Linux); the
+  that admits only the connection's container (on Linux a socket in a
+  random `0700` folder under `XDG_RUNTIME_DIR` or `/tmp`, so its path fits
+  in `sun_path`); the
   trusted process serves MCP and holds each `tools/call` open while the turn
   runtime checks, approves, dispatches, and journals it as for every other
   provider. Failures are `claude_code_not_signed_in`, `claude_code_protocol`,

@@ -206,7 +206,7 @@ impl ClaudeCodeClient {
             RenderError::TooLarge => ProviderError::RequestTooLarge,
             RenderError::Empty => ProviderError::InvalidConfiguration,
         })?;
-        let turn = TurnFolder::create(&self.config.runtime_folder)?;
+        let mut turn = TurnFolder::create(&self.config.runtime_folder)?;
         fs::write(turn.path.join("system.txt"), rendered.system.as_bytes())
             .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
         let settings = json!({
@@ -225,7 +225,7 @@ impl ClaudeCodeClient {
         let mcp_config = if tools.is_empty() {
             json!({ "mcpServers": {} })
         } else {
-            let listener = bind_listener(&turn, self.config.container.as_ref())?;
+            let listener = bind_listener(&mut turn, self.config.container.as_ref())?;
             let nonce = random_hex(32)?;
             let config = json!({
                 "mcpServers": {
@@ -769,6 +769,9 @@ impl Drop for Session {
 /// A per-turn folder under the runtime folder, removed when dropped.
 struct TurnFolder {
     path: PathBuf,
+    /// The relay socket's private folder on Linux, created only for a turn
+    /// that offers tools and removed with the turn.
+    socket_folder: Option<PathBuf>,
 }
 
 impl TurnFolder {
@@ -781,31 +784,79 @@ impl TurnFolder {
         if made.is_err() {
             return Err(failure(ClaudeCodeFailure::Failed));
         }
-        let folder = Self { path };
+        let folder = Self {
+            path,
+            socket_folder: None,
+        };
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            let mut builder = fs::DirBuilder::new();
-            builder.mode(0o700);
-            builder
-                .create(folder.path.join("ipc"))
-                .and_then(|()| builder.create(folder.path.join("tmp")))
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(folder.path.join("tmp"))
                 .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
         }
         Ok(folder)
+    }
+
+    /// Create the relay socket's private folder, mode `0700`, under
+    /// [`socket_parent`]. The name is random and the creation exclusive, so
+    /// an entry that already exists fails the turn rather than being reused.
+    #[cfg(target_os = "linux")]
+    fn create_socket_folder(&mut self) -> Result<PathBuf, ProviderError> {
+        use std::os::unix::fs::DirBuilderExt;
+        let path = socket_parent(std::env::var_os("XDG_RUNTIME_DIR"))
+            .join(format!("{SOCKET_FOLDER_PREFIX}{}", random_hex(8)?));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
+        self.socket_folder = Some(path.clone());
+        Ok(path)
     }
 }
 
 impl Drop for TurnFolder {
     fn drop(&mut self) {
-        // Best effort: a leftover folder holds only this turn's prompt.
+        // Best effort: a leftover folder holds only this turn's prompt, and a
+        // leftover socket folder at most a socket nobody accepts on.
         let _ = fs::remove_dir_all(&self.path);
+        if let Some(socket_folder) = &self.socket_folder {
+            let _ = fs::remove_dir_all(socket_folder);
+        }
     }
+}
+
+/// The relay socket's file name.
+#[cfg(target_os = "linux")]
+const SOCKET_NAME: &str = "mcp.sock";
+/// The start of the relay socket folder's name; 16 random hex digits follow.
+#[cfg(target_os = "linux")]
+const SOCKET_FOLDER_PREFIX: &str = "omgcode-";
+/// The longest socket parent that leaves the socket path within the 107
+/// bytes `sun_path` holds: the parent, a separator, the folder name, a
+/// separator, and [`SOCKET_NAME`].
+#[cfg(target_os = "linux")]
+const MAX_SOCKET_PARENT_BYTES: usize =
+    107 - 1 - SOCKET_FOLDER_PREFIX.len() - 16 - 1 - SOCKET_NAME.len();
+
+/// The folder that holds the relay socket's folder on Linux: the canonical
+/// `runtime` folder (`XDG_RUNTIME_DIR`) when it is absolute and short enough,
+/// or `/tmp`. The application data folder is not used, because a socket path
+/// beneath it does not fit in `sun_path`.
+#[cfg(target_os = "linux")]
+fn socket_parent(runtime: Option<OsString>) -> PathBuf {
+    runtime
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .and_then(|path| fs::canonicalize(path).ok())
+        .filter(|path| path.as_os_str().len() <= MAX_SOCKET_PARENT_BYTES)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
 /// Bind the channel the relay connects to.
 fn bind_listener(
-    turn: &TurnFolder,
+    turn: &mut TurnFolder,
     container: Option<&ContainerName>,
 ) -> Result<omgcode_platform::ipc::LocalListener, ProviderError> {
     #[cfg(windows)]
@@ -821,12 +872,65 @@ fn bind_listener(
     let target = {
         let _ = container;
         omgcode_platform::ipc::ListenerTarget::PrivateDirectory {
-            directory: turn.path.join("ipc"),
-            name: OsString::from("mcp.sock"),
+            directory: turn.create_socket_folder()?,
+            name: OsString::from(SOCKET_NAME),
         }
     };
     omgcode_platform::ipc::LocalListener::bind(target)
         .map_err(|_| failure(ClaudeCodeFailure::Failed))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod socket_tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{MAX_SOCKET_PARENT_BYTES, SOCKET_FOLDER_PREFIX, SOCKET_NAME, socket_parent};
+
+    #[test]
+    fn the_longest_accepted_parent_leaves_a_socket_path_of_107_bytes() {
+        let parent = format!("/{}", "p".repeat(MAX_SOCKET_PARENT_BYTES - 1));
+        let socket = PathBuf::from(parent)
+            .join(format!("{SOCKET_FOLDER_PREFIX}{}", "0".repeat(16)))
+            .join(SOCKET_NAME);
+        assert_eq!(socket.as_os_str().len(), 107);
+    }
+
+    #[test]
+    fn an_unset_relative_or_missing_runtime_folder_falls_back_to_tmp() {
+        let tmp = PathBuf::from("/tmp");
+        assert_eq!(socket_parent(None), tmp);
+        assert_eq!(socket_parent(Some(OsString::from("relative/run"))), tmp);
+        assert_eq!(
+            socket_parent(Some(OsString::from("/nonexistent/omgcode-runtime"))),
+            tmp
+        );
+    }
+
+    #[test]
+    fn a_runtime_folder_too_long_for_the_socket_falls_back_to_tmp() {
+        let base = tempfile::tempdir().expect("base");
+        let mut long = fs::canonicalize(base.path()).expect("canonical");
+        while long.as_os_str().len() <= MAX_SOCKET_PARENT_BYTES {
+            long.push("long-runtime-folder");
+        }
+        fs::create_dir_all(&long).expect("long folder");
+        assert_eq!(
+            socket_parent(Some(long.into_os_string())),
+            PathBuf::from("/tmp")
+        );
+    }
+
+    #[test]
+    fn a_short_runtime_folder_is_used_canonically() {
+        let base = tempfile::tempdir().expect("base");
+        let canonical = fs::canonicalize(base.path()).expect("canonical");
+        let link = canonical.join("link");
+        std::os::unix::fs::symlink(&canonical, &link).expect("link");
+        assert!(link.as_os_str().len() <= MAX_SOCKET_PARENT_BYTES);
+        assert_eq!(socket_parent(Some(link.into_os_string())), canonical);
+    }
 }
 
 /// Accept the relay, check its nonce, then forward its lines.
