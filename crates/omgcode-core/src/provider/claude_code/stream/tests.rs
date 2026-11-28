@@ -202,6 +202,36 @@ fn text_deltas_of_the_main_agent_are_reported() {
     assert_eq!(event(no_parent), StreamEvent::TextDelta(String::new()));
 }
 
+/// A tool-use block's name is reported from its first streamed event, for
+/// the main agent and a sub-agent alike, so an unexpected tool is seen before
+/// its input is complete.
+#[test]
+fn a_tool_use_block_start_reports_its_name() {
+    let main = r#"{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01","name":"mcp__omgcode__workspace_read_file","input":{}}},"parent_tool_use_id":null}"#;
+    assert_eq!(
+        event(main),
+        StreamEvent::ToolUseStart("mcp__omgcode__workspace_read_file".into())
+    );
+    let sub = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_02","name":"Bash","input":{}}},"parent_tool_use_id":"toolu_01"}"#;
+    assert_eq!(event(sub), StreamEvent::ToolUseStart("Bash".into()));
+    for (line, error) in [
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_start","index":0}}"#,
+            StreamError::Shape("content_block"),
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"t"}}}"#,
+            StreamError::Shape("name"),
+        ),
+        (
+            r#"{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":""}}}"#,
+            StreamError::Shape("tool_use"),
+        ),
+    ] {
+        assert_eq!(parse_line(line.as_bytes()), Err(error), "{line}");
+    }
+}
+
 #[test]
 fn other_stream_events_and_sub_agent_deltas_are_ignored() {
     for line in [

@@ -231,6 +231,10 @@ pub enum StreamEvent {
     /// A piece of provisional reply text from the main agent. Only a
     /// `text_delta` whose `parent_tool_use_id` is null is reported.
     TextDelta(String),
+    /// The name of a `tool_use` block from its streamed
+    /// `content_block_start`, from any agent, before the block is complete.
+    /// The caller checks it against the offered tools at once.
+    ToolUseStart(String),
     /// The final result.
     Result(ResultReport),
     /// A well-formed line that OMGCode does not use, including unknown
@@ -370,8 +374,10 @@ fn parse_stream_event(top: &Map<String, Value>) -> Result<StreamEvent, StreamErr
         top.get("event").ok_or(StreamError::Shape("event"))?,
         "event",
     )?;
-    if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
-        return Ok(StreamEvent::Ignored);
+    match event.get("type").and_then(Value::as_str) {
+        Some("content_block_start") => return parse_block_start(event),
+        Some("content_block_delta") => {}
+        _ => return Ok(StreamEvent::Ignored),
     }
     if optional_name(top, "parent_tool_use_id")?.is_some() {
         return Ok(StreamEvent::Ignored);
@@ -387,6 +393,25 @@ fn parse_stream_event(top: &Map<String, Value>) -> Result<StreamEvent, StreamErr
         Some(Value::String(text)) => Ok(StreamEvent::TextDelta(text.clone())),
         _ => Err(StreamError::Shape("text")),
     }
+}
+
+/// A `content_block_start` reports a `tool_use` block's name; any other
+/// block start is ignored.
+fn parse_block_start(event: &Map<String, Value>) -> Result<StreamEvent, StreamError> {
+    let block = as_object(
+        event
+            .get("content_block")
+            .ok_or(StreamError::Shape("content_block"))?,
+        "content_block",
+    )?;
+    if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+        return Ok(StreamEvent::Ignored);
+    }
+    let name = required_name(block, "name")?;
+    if name.is_empty() {
+        return Err(StreamError::Shape("tool_use"));
+    }
+    Ok(StreamEvent::ToolUseStart(name))
 }
 
 fn parse_assistant(top: &Map<String, Value>) -> Result<AssistantMessage, StreamError> {
