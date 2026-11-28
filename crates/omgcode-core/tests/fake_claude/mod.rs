@@ -64,7 +64,9 @@ impl McpClient {
             .env(RELAY_NONCE_VARIABLE, nonce)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            // Not the null device: inside the AppContainer on the Windows
+            // Server 2025 CI runner, opening `NUL` was denied (os error 5).
+            .stderr(Stdio::inherit());
         for name in ["SystemRoot", "windir", "LOCALAPPDATA"] {
             if let Some(value) = env::var_os(name) {
                 builder.env(name, value);

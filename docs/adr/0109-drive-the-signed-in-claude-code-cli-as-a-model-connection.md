@@ -314,6 +314,11 @@ Haiku request with one tool call.
   signed-in turn of the real `claude` on either platform, Linux outside
   WSL 2, the desktop shell and in-turn approvals (a later change), other
   plans, rate-limit shapes, and long turns.
+- On the Windows Server 2025 CI runner, a process in the connection's
+  AppContainer could not open the `NUL` device (access denied), though it
+  could on Windows 11. The fake gives its relay its own standard error
+  instead. Whether the real `claude` opens `NUL` was not observed; if it
+  does, it may fail to start on such hosts.
 
 ## References
 
