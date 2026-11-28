@@ -1705,6 +1705,35 @@ mod socket_tests {
     }
 
     #[test]
+    fn a_runtime_folder_is_measured_in_bytes_not_characters() {
+        // Beneath `/tmp` itself, as in the encoding test, so the folder's
+        // own name decides its length.
+        let base = tempfile::Builder::new()
+            .prefix("mb-")
+            .tempdir_in("/tmp")
+            .expect("base");
+        let canonical = fs::canonicalize(base.path()).expect("canonical");
+        let room = MAX_SOCKET_PARENT_BYTES - canonical.as_os_str().len() - 1;
+        // One character, two bytes in UTF-8.
+        let wide = char::from_u32(0xE9).expect("a two-byte character");
+        assert_eq!(wide.len_utf8(), 2);
+        let fits = canonical.join(wide.to_string().repeat(room / 2));
+        let too_long = canonical.join(wide.to_string().repeat(room));
+        for folder in [&fits, &too_long] {
+            fs::create_dir(folder).expect("folder");
+        }
+        let text = too_long.to_str().expect("UTF-8");
+        assert!(text.chars().count() <= MAX_SOCKET_PARENT_BYTES);
+        assert!(text.len() > MAX_SOCKET_PARENT_BYTES);
+        assert_eq!(
+            socket_parent(Some(too_long.into_os_string())),
+            PathBuf::from("/tmp")
+        );
+        assert!(fits.as_os_str().len() <= MAX_SOCKET_PARENT_BYTES);
+        assert_eq!(socket_parent(Some(fits.clone().into_os_string())), fits);
+    }
+
+    #[test]
     fn a_short_runtime_folder_is_used_canonically() {
         let base = tempfile::tempdir().expect("base");
         let canonical = fs::canonicalize(base.path()).expect("canonical");
