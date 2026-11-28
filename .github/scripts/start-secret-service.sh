@@ -25,7 +25,7 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) starting gnome-keyring-daemon" >"$log"
   status=0
   printf '\n' | gnome-keyring-daemon --foreground --unlock --components=secrets || status=$?
   reason="status $status"
-  if [ "$status" -gt 128 ] && signal=$(kill -l "$((status - 128))" 2>/dev/null); then
+  if [[ "$status" -gt 128 ]] && signal=$(kill -l "$((status - 128))" 2>/dev/null); then
     reason="$reason (SIG$signal if a signal ended it)"
   fi
   echo "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) gnome-keyring-daemon exited with $reason"
@@ -52,7 +52,7 @@ wrapper_finished() {
 }
 on_exit() {
   local status=$? shown
-  if [ "$status" -ne 0 ]; then
+  if [[ "$status" -ne 0 ]]; then
     echo "--- $log" >&2
     cat "$log" >&2
     shown=$(wc -l <"$log")
@@ -84,9 +84,9 @@ secrets_owner() {
 }
 not_our_daemon() {
   local owner="no process"
-  if [ -n "$1" ]; then owner="PID $1"; fi
+  if [[ -n "$1" ]]; then owner="PID $1"; fi
   echo "::error::org.freedesktop.secrets is owned by $owner, not by the daemon started here ($2)." >&2
-  if [ -n "$1" ]; then ps -ww -o pid,ppid,args -p "$1" >&2 || true; fi
+  if [[ -n "$1" ]]; then ps -ww -o pid,ppid,args -p "$1" >&2 || true; fi
   exit 1
 }
 
@@ -95,11 +95,11 @@ not_our_daemon() {
 # activate the packaged gnome-keyring-daemon.service, whose login collection
 # is locked.
 for _ in $(seq 1 50); do
-  [ "$(bus_driver NameHasOwner s org.freedesktop.secrets)" = "b true" ] && break
+  [[ "$(bus_driver NameHasOwner s org.freedesktop.secrets)" = "b true" ]] && break
   sleep 0.2
 done
 daemon_pid=$(secrets_owner)
-if [ -z "$daemon_pid" ] || [ "$(ps -o ppid= -p "$daemon_pid" | tr -d ' ')" != "$wrapper_pid" ]; then
+if [[ -z "$daemon_pid" ]] || [[ "$(ps -o ppid= -p "$daemon_pid" | tr -d ' ')" != "$wrapper_pid" ]]; then
   not_our_daemon "$daemon_pid" "a child of PID $wrapper_pid"
 fi
 echo "$daemon_pid" >"$state_dir/daemon.pid"
@@ -124,14 +124,14 @@ case "$collection" in
     ;;
 esac
 locked=$(secret_service get-property "$collection" org.freedesktop.Secret.Collection Locked)
-if [ "$locked" != "b false" ]; then
+if [[ "$locked" != "b false" ]]; then
   echo "::error::The default collection $collection is locked: $locked" >&2
   exit 1
 fi
 # The calls above would have activated a replacement daemon if this one had
 # left the bus meanwhile, so the owner is checked again after the last one.
 owner_now=$(secrets_owner)
-if [ "$owner_now" != "$daemon_pid" ]; then
+if [[ "$owner_now" != "$daemon_pid" ]]; then
   not_our_daemon "$owner_now" "PID $daemon_pid"
 fi
 echo "gnome-keyring-daemon PID $daemon_pid owns org.freedesktop.secrets; default collection $collection is unlocked; output in $log"

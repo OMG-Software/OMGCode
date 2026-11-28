@@ -9,12 +9,12 @@ set -uo pipefail
 state_dir="${RUNNER_TEMP:?}/secret-service"
 
 echo "::group::Daemon started by this job"
-if [ -f "$state_dir/daemon.log" ]; then
+if [[ -f "$state_dir/daemon.log" ]]; then
   cat "$state_dir/daemon.log"
 else
   echo "No $state_dir/daemon.log: the Secret Service step did not start a daemon."
 fi
-if [ -f "$state_dir/daemon.pid" ]; then
+if [[ -f "$state_dir/daemon.pid" ]]; then
   pid=$(cat "$state_dir/daemon.pid")
   if ps -p "$pid" >/dev/null; then
     echo "PID $pid is still running:"

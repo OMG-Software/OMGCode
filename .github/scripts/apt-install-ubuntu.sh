@@ -7,13 +7,13 @@
 # included, and package signatures are checked as usual.
 set -euo pipefail
 
-if [ "$#" -eq 0 ]; then
+if [[ "$#" -eq 0 ]]; then
   echo "usage: $0 PACKAGE..." >&2
   exit 2
 fi
 
 ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
-if [ ! -f "$ubuntu_sources" ]; then
+if [[ ! -f "$ubuntu_sources" ]]; then
   echo "::error::$ubuntu_sources is missing; the runner image no longer has the expected Ubuntu source file." >&2
   ls -la /etc/apt /etc/apt/sources.list.d >&2 || true
   exit 1
