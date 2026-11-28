@@ -57,6 +57,11 @@ const TURN_LOCK_SUFFIX: &str = ".turns";
 /// The suffix of a turn's record, named `<profile>.<turn>.unconfirmed`.
 const TURN_RECORD_SUFFIX: &str = ".unconfirmed";
 
+/// The suffix of a turn record while it is written, under the records'
+/// lock, before it is renamed into place. No reader lists it; one that a
+/// crash left behind started no process and reserves nothing.
+const TURN_RECORD_STAGING_SUFFIX: &str = ".staging";
+
 /// The longest turn record read back; one holds a profile identifier and
 /// three folder records.
 const MAX_TURN_RECORD_BYTES: u64 = 64 * 1024;
@@ -210,15 +215,17 @@ impl ClaudeCodeWatch {
 
     /// [`Self::record_turn`], calling `waiting` the first time it finds the
     /// records' lock held, and `counted` once the records were counted and
-    /// before the new one is written, so a test can start another turn
-    /// there and see it wait.
+    /// the new one was written and synced under its staging name, before it
+    /// is published, so a test can start another turn there and see it
+    /// wait, or read the records while one is being written.
     pub(super) fn record_turn_observed(
         &self,
         waiting: impl FnOnce(),
         counted: impl FnOnce(),
     ) -> Result<TurnRecord, ControlError> {
-        // Held until the record is written and synced, so two turns, also
-        // of two connections, cannot both count a free record.
+        // Held until the record is written, synced, and renamed into place,
+        // so two turns, also of two connections, cannot both count a free
+        // record.
         let _records = lock_records(&self.data_root, waiting)?;
         let mut kept = 0;
         each_turn_record(&self.data_root, |_, _| {
@@ -232,7 +239,6 @@ impl ClaudeCodeWatch {
         if kept >= MAX_TURN_RECORDS {
             return Err(ControlError::ClaudeCodeTurnRecordsFull);
         }
-        counted();
         let body = serde_json::to_vec(&TurnRecordBody {
             profile_id: self.profile_id,
             config_folder: self.folders.config_folder.clone(),
@@ -241,11 +247,11 @@ impl ClaudeCodeWatch {
         })
         .map_err(io::Error::other)?;
         let parent = self.data_root.join(RUNTIME_PARENT);
-        let path = parent.join(format!(
-            "{}.{}{TURN_RECORD_SUFFIX}",
-            self.profile_id.simple(),
-            Uuid::new_v4().simple()
-        ));
+        let name = format!("{}.{}", self.profile_id.simple(), Uuid::new_v4().simple());
+        // Written whole under a name no reader lists, then renamed into
+        // place, so a reader that takes no lock never sees a partial record.
+        let staged = parent.join(format!("{name}{TURN_RECORD_STAGING_SUFFIX}"));
+        let path = parent.join(format!("{name}{TURN_RECORD_SUFFIX}"));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -253,19 +259,18 @@ impl ClaudeCodeWatch {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&path)?;
-        let written = file
-            .write_all(&body)
-            .and_then(|()| file.sync_all())
-            .and_then(|()| sync_directory(&parent));
+        let mut file = options.open(&staged)?;
+        let written = file.write_all(&body).and_then(|()| file.sync_all());
+        drop(file);
         if let Err(error) = written {
-            drop(file);
-            // No process started, so nothing needs the record; one that
-            // cannot be removed fails closed, as an unconfirmed end does.
-            return Err(ControlError::Io(match fs::remove_file(&path) {
-                Ok(()) => error,
-                Err(removal) => io::Error::other(format!("{error}; the record stays: {removal}")),
-            }));
+            return Err(remove_unstarted(&staged, error));
+        }
+        counted();
+        if let Err(error) = fs::rename(&staged, &path) {
+            return Err(remove_unstarted(&staged, error));
+        }
+        if let Err(error) = sync_directory(&parent) {
+            return Err(remove_unstarted(&path, error));
         }
         Ok(TurnRecord { path })
     }
@@ -497,15 +502,32 @@ pub(super) fn reserved_folders(
     data_root: &Path,
     skip: impl Fn(Uuid) -> bool,
 ) -> Result<Vec<(Uuid, TurnFolders)>, ControlError> {
+    read_reserved(turn_records(data_root)?, skip)
+}
+
+/// [`reserved_folders`] for records listed earlier. This takes no lock, so
+/// a listed record can be gone when it is opened: its turn's end was
+/// confirmed or acknowledged, and it reserves nothing.
+///
+/// # Errors
+///
+/// [`ControlError::ClaudeCodeTurnRecordUnreadable`] for a record that still
+/// exists but cannot be read, or that names another connection than its
+/// file name.
+pub(super) fn read_reserved(
+    records: Vec<(Uuid, PathBuf)>,
+    skip: impl Fn(Uuid) -> bool,
+) -> Result<Vec<(Uuid, TurnFolders)>, ControlError> {
     let mut reserved = Vec::new();
-    for (owner, path) in turn_records(data_root)? {
+    for (owner, path) in records {
         if skip(owner) {
             continue;
         }
-        let body = read_turn_record(&path)
-            .ok()
-            .filter(|body| body.profile_id == owner)
-            .ok_or(ControlError::ClaudeCodeTurnRecordUnreadable(owner))?;
+        let body = match read_turn_record(&path) {
+            Ok(body) if body.profile_id == owner => body,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            _ => return Err(ControlError::ClaudeCodeTurnRecordUnreadable(owner)),
+        };
         reserved.push((
             owner,
             TurnFolders {
@@ -544,7 +566,7 @@ fn refuse_unconfirmed(data_root: &Path, profile_id: Uuid) -> Result<(), ControlE
 /// [`ControlError::ClaudeCodeTurnRecordsFull`] beyond [`MAX_TURN_RECORDS`]
 /// records, before any more is kept, and [`ControlError::Io`] when the
 /// records cannot be listed.
-fn turn_records(data_root: &Path) -> Result<Vec<(Uuid, PathBuf)>, ControlError> {
+pub(super) fn turn_records(data_root: &Path) -> Result<Vec<(Uuid, PathBuf)>, ControlError> {
     let mut records = Vec::new();
     let mut full = false;
     each_turn_record(data_root, |owner, path| {
@@ -603,6 +625,17 @@ fn read_turn_record(path: &Path) -> io::Result<TurnRecordBody> {
         return Err(io::Error::other("the turn record is too large"));
     }
     serde_json::from_slice(&bytes).map_err(io::Error::other)
+}
+
+/// Remove the record of a turn whose process has not started, after the
+/// write that failed with `error`. A published record that cannot be
+/// removed stays and fails closed, as an unconfirmed end does; a staged one
+/// is listed by no reader.
+fn remove_unstarted(path: &Path, error: io::Error) -> ControlError {
+    ControlError::Io(match fs::remove_file(path) {
+        Ok(()) => error,
+        Err(removal) => io::Error::other(format!("{error}; the record stays: {removal}")),
+    })
 }
 
 /// Make a new entry in `directory` durable. Windows file systems record

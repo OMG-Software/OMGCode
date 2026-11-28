@@ -980,7 +980,13 @@ and a tool turn keeps that process for all its rounds.
   counts them and writes its own under one exclusive lock,
   `claude-code/turn-records.lock`, so two turns cannot both take the last
   free record, and one that waits five seconds for that lock starts
-  nothing. A turn that finds that many starts nothing and fails with
+  nothing. The record is written whole under a `.staging` name that no
+  reader lists and renamed into place under that lock, so a check that
+  reads the records without the lock sees a whole record or none; one that
+  a crash left staged started no process and reserves nothing. A record
+  removed after such a check listed it reserves nothing, and one that
+  exists but cannot be read is still refused. A turn that finds 256
+  records starts nothing and fails with
   `claude_code_turn_records_full`, whose message names the acknowledgement
   and the process-tree check before it, a sign-in folder check that finds
   more fails with a `control` error that names the acknowledgement, and the

@@ -1383,11 +1383,11 @@ fn turn_record_count(data: &Path) -> usize {
 
 /// Two turns cannot both take the last free record: a turn counts the
 /// records and writes its own under one exclusive lock across every
-/// connection. The first turn is held after its count, with one record
-/// free, until a turn of another connection started then reports that it
-/// found the lock held, so it neither counted nor wrote before the first
-/// wrote its record, and is then refused. Without the lock it would end
-/// instead, one record past the limit.
+/// connection. The first turn is held after its count and staged write,
+/// with one record free, until a turn of another connection started then
+/// reports that it found the lock held, so it neither counted nor wrote
+/// before the first published its record, and is then refused as full.
+/// Without the lock it would end instead, one record past the limit.
 #[test]
 fn two_turns_cannot_both_take_the_last_free_record() {
     /// What the held first turn hears from the second.
@@ -1446,8 +1446,88 @@ fn two_turns_cannot_both_take_the_last_free_record() {
     }
     let _first = first.expect("the first turn takes the last free record");
     let refused = second.expect_err("no record past the limit");
-    assert!(refused.to_string().contains("full"), "{refused}");
+    assert!(
+        matches!(refused, ControlError::ClaudeCodeTurnRecordsFull),
+        "{refused}"
+    );
     assert_eq!(turn_record_count(&scene.data), MAX_TURN_RECORDS);
+}
+
+/// A turn record is written and synced under a staging name that no reader
+/// lists, and renamed into place under the records' lock. Sign-in admission
+/// reads the records without that lock, so while one is being written it
+/// sees none of it rather than a partial record it would refuse as
+/// unreadable, and once the record is published it sees all of it.
+#[test]
+fn a_turn_record_is_listed_only_once_written_whole() {
+    let scene = Scene::new();
+    let (profile_id, _, watch) = resolved_turn(&scene);
+    let runtime = scene.data.join(RUNTIME_PARENT);
+    let staged = || {
+        fs::read_dir(&runtime)
+            .expect("records")
+            .map(|entry| entry.expect("entry").file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".staging"))
+            .count()
+    };
+    let mut while_written = None;
+    let _record = watch
+        .record_turn_observed(
+            || {},
+            || {
+                while_written = Some((
+                    staged(),
+                    turn_record_count(&scene.data),
+                    super::turns::reserved_folders(&scene.data, |_| false).map(|found| found.len()),
+                ));
+            },
+        )
+        .expect("record");
+    let Some((staged_then, listed_then, reserved_then)) = while_written else {
+        panic!("the record was never staged");
+    };
+    assert_eq!((staged_then, listed_then), (1, 0));
+    assert!(matches!(reserved_then, Ok(0)), "{reserved_then:?}");
+    assert_eq!((staged(), turn_record_count(&scene.data)), (0, 1));
+    let reserved = super::turns::reserved_folders(&scene.data, |_| false).expect("readable");
+    assert_eq!(
+        reserved.iter().map(|(owner, _)| *owner).collect::<Vec<_>>(),
+        [profile_id]
+    );
+}
+
+/// Admission lists the turn records and then opens each without a lock, so
+/// a record can be removed in between, as when its turn's end is confirmed.
+/// That record reserves nothing; one that still exists but cannot be read
+/// is still refused.
+#[test]
+fn a_turn_record_removed_after_it_was_listed_reserves_nothing() {
+    let scene = Scene::new();
+    let (profile_id, _, watch) = resolved_turn(&scene);
+    let ended = watch.record_turn().expect("record");
+    let other = Uuid::new_v4();
+    let others = ClaudeCodeWatch::for_tests(scene.data.clone(), other, &scene.root);
+    let _running = others.record_turn().expect("record");
+    let listed = super::turns::turn_records(&scene.data).expect("listed");
+    assert_eq!(listed.len(), 2);
+    ended.clear().expect("the turn's end is confirmed");
+    let reserved = super::turns::read_reserved(listed.clone(), |_| false)
+        .expect("a record removed since it was listed is no failure");
+    assert_eq!(
+        reserved.iter().map(|(owner, _)| *owner).collect::<Vec<_>>(),
+        [other]
+    );
+    assert!(listed.iter().any(|(owner, _)| *owner == profile_id));
+
+    let (_, damaged) = listed
+        .iter()
+        .find(|(owner, _)| *owner == other)
+        .expect("the other connection's record");
+    fs::write(damaged, b"not a record").expect("damage the record");
+    assert!(matches!(
+        super::turns::read_reserved(listed, |_| false),
+        Err(ControlError::ClaudeCodeTurnRecordUnreadable(id)) if id == other
+    ));
 }
 
 #[cfg(not(windows))]

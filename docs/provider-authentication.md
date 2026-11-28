@@ -655,8 +655,11 @@ Anthropic approval, and the Claude subscription requirement stays open.
   their descendants, and keep the record while that cannot be confirmed.
   The command only removes the connection's turn records; it records
   nothing about that check and is refused while a turn holds the
-  connection's turn lock. At most 256 turn records are kept, each counted
-  and written under one exclusive lock across every connection: past that
+  connection's turn lock. At most 256 turn records are kept, each counted,
+  written whole under a `.staging` name, and renamed into place under one
+  exclusive lock across every connection, so a sign-in folder check never
+  reads a partial record; one removed after the check listed it reserves
+  nothing. Past that limit
   no turn starts, failing with `claude_code_turn_records_full`, and a
   sign-in folder check is refused until records are
   acknowledged, which still works while the inventory is full. On Linux no

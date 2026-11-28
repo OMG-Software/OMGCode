@@ -67,7 +67,11 @@ Changes are recorded here before a release version is assigned.
   and the process-tree check before it, a sign-in
   folder check that finds more is refused with a `control` error that names
   the acknowledgement, and the acknowledgement still clears a connection's
-  records while the inventory is full.
+  records while the inventory is full. A record is written whole under a
+  `.staging` name that no reader lists and renamed into place under that
+  lock, so a sign-in folder check, which reads the records without it, sees
+  a whole record or none; a record removed after the check listed it
+  reserves nothing, and one that exists but cannot be read is refused.
   `workspace claude-code-revoke`, `workspace provider-profile-remove`, and
   the `settings` window's removal wait up to 30 seconds for those processes
   to end, or fail with a `control` error that says the change is recorded;

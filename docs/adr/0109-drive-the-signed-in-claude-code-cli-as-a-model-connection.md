@@ -176,6 +176,13 @@ Haiku request with one tool call.
    and fails with `claude_code_turn_records_full`, whose message names the
    acknowledgement and the process-tree check before it; a record that
    cannot be written for another reason fails it as `claude_code_failed`.
+   The record is written and synced whole under a `.staging` name that no
+   reader lists, then renamed into place before the lock is released, so
+   the sign-in folder checks, which read the records without that lock,
+   see a whole record or none; one that a crash left staged started no
+   process and reserves nothing. A record removed between a check's listing
+   and its read, as when its turn's end is confirmed, reserves nothing, and
+   one that exists but cannot be read is refused.
    A sign-in folder check that finds more, as records written
    by other means can leave, is refused with a `control` error that names
    the acknowledgement before it reads any of them. The acknowledgement visits
