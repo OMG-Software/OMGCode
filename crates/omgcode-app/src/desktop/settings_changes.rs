@@ -325,6 +325,7 @@ const fn provider_label(kind: ProviderKind) -> &'static str {
         ProviderKind::DeepSeek => "DeepSeek",
         ProviderKind::XAi => "xAI (Grok)",
         ProviderKind::OpenAiCompatible => "an OpenAI-compatible service",
+        ProviderKind::ClaudeCode => "Claude Code",
     }
 }
 

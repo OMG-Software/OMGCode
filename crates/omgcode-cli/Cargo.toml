@@ -22,5 +22,11 @@ uuid.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+# The test binary is also the fake `claude`, so it needs its own `main`
+# (ADR-0109).
+[[test]]
+name = "claude_code_cli"
+harness = false
+
 [lints]
 workspace = true

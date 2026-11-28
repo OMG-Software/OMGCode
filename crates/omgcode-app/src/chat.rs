@@ -14,9 +14,12 @@ mod text;
 mod tools;
 
 use std::path::Path;
+use std::time::Duration;
 
 use omgcode_core::context::DEFAULT_COMPACT_THRESHOLD;
+use omgcode_core::control::ClaudeCodePaths;
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION, SkillPrompt};
+use omgcode_core::provider::claude_code::{ClaudeCodeClient, ClaudeCodeConfig};
 use omgcode_core::provider::{LocalModelClient, LocalModelConfig, ReasoningEffort};
 use omgcode_core::session::{ManifestSkill, RequestManifest, SessionJournal};
 use omgcode_core::skills::SkillName;
@@ -30,6 +33,7 @@ pub use self::skills::{LoadedSkillSummary, validate_selection as validate_skill_
 use crate::context::summary_output_tokens;
 use crate::credential_source::{LmToken, LocalConnection};
 use crate::error::{AppError, ErrorKind};
+use crate::model_client::ModelClient;
 use crate::secrets::redact_known_secret;
 use crate::tool_mode::{TOOL_SCHEMA_ESTIMATE_BYTES, ToolMode, select};
 
@@ -191,8 +195,8 @@ pub struct ChatHooks<'a> {
 /// opened. The clients keep their own copy of the token header; they do not
 /// implement `Debug` output of it.
 pub struct ChatClients {
-    chat: LocalModelClient,
-    summary: LocalModelClient,
+    chat: ModelClient,
+    summary: ModelClient,
 }
 
 impl ChatClients {
@@ -229,7 +233,42 @@ impl ChatClients {
             token.map(str::to_owned),
         )
         .map_err(AppError::provider)?;
-        Ok(Self { chat, summary })
+        Ok(Self {
+            chat: chat.into(),
+            summary: summary.into(),
+        })
+    }
+
+    /// Build the clients for a recorded Claude Code connection whose paths
+    /// [`crate::resolve_claude_code`] resolved (ADR-0109). Each model request
+    /// may wait for the process up to the turn timeout. The summary client
+    /// sends no effort.
+    ///
+    /// # Errors
+    ///
+    /// `configuration` for an out-of-range turn budget, and `provider` for a
+    /// model name, output budget, or effort the connection does not take. No
+    /// process is started.
+    pub fn claude_code(settings: &ChatSettings, paths: ClaudeCodePaths) -> Result<Self, AppError> {
+        validate_turn_budgets(settings.max_tool_calls, settings.turn_timeout_seconds)
+            .map_err(|message| AppError::new(ErrorKind::Configuration, message))?;
+        let chat = ClaudeCodeClient::new(ClaudeCodeConfig {
+            program: paths.program,
+            config_folder: paths.config_folder,
+            runtime_folder: paths.runtime_folder,
+            relay_program: paths.relay_program,
+            container: paths.container,
+            model: settings.model.clone(),
+            effort: settings.reasoning_effort,
+            max_output_tokens: settings.max_output_tokens,
+            request_timeout: Duration::from_secs(settings.turn_timeout_seconds),
+        })
+        .map_err(AppError::provider)?;
+        let summary = chat.for_summaries(summary_output_tokens(settings.context_tokens));
+        Ok(Self {
+            chat: chat.into(),
+            summary: summary.into(),
+        })
     }
 
     /// Build the clients for a resolved connection: plan-backed clients that
@@ -263,9 +302,9 @@ impl ChatClients {
             .map_err(AppError::provider)
         };
         Ok(Self {
-            chat: build(settings.max_output_tokens, settings.reasoning_effort)?,
+            chat: build(settings.max_output_tokens, settings.reasoning_effort)?.into(),
             // Compaction sends no effort (ADR-0102 decision 6).
-            summary: build(summary_output_tokens(settings.context_tokens), None)?,
+            summary: build(summary_output_tokens(settings.context_tokens), None)?.into(),
         })
     }
 }

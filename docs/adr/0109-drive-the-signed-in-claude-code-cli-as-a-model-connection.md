@@ -70,106 +70,146 @@ Haiku request with one tool call.
 
 1. **A `claude_code` connection kind.** A provider profile of kind
    `claude_code` accepts authentication `subscription` only. It records the
-   absolute path of the operator's `claude` program and the operator's
-   Claude configuration folder, each with its recorded identity. It records
-   no endpoint, account, token, or credential binding. The profile is
+   canonical path of the operator's `claude` program (an `.exe` on Windows)
+   and the operator's Claude configuration folder, each with its recorded
+   directory identity. It records no endpoint, account, token, or credential
+   binding. The trusted CLI adds one with `workspace claude-code-add`; the
+   generic `provider-profile-add` refuses the kind. The profile is
    configuration only: it does not show that Anthropic approves the route.
 2. **The operator signs in, and OMGCode stays out of it.** The operator runs
    `claude auth login` with `CLAUDE_CONFIG_DIR` set to a folder used only for
-   OMGCode. OMGCode has no Claude sign-in command. It never opens, reads,
-   copies, stores, or passes a file or token from that folder. It only sets
-   `CLAUDE_CONFIG_DIR` for the child and, on Windows, grants the child's
-   container access to the folder. `claude setup-token`,
-   `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, and
+   OMGCode, outside application storage, the development root, and every
+   workspace. OMGCode has no Claude sign-in command. It never opens, reads,
+   copies, stores, or passes a file or token from that folder. It only checks
+   the folder's identity, sets `CLAUDE_CONFIG_DIR` for the child, and, on
+   Windows, grants the child's container access to the folder.
+   `claude setup-token`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, and
    `ANTHROPIC_AUTH_TOKEN` are never set, so the CLI uses only its own
    sign-in. A dedicated folder keeps this sign-in's refresh-token rotation
    apart from the operator's everyday Claude Code sign-in.
 3. **A dedicated sandbox per connection.** On Windows, the child runs in its
    own AppContainer, `OMGCode.ClaudeCode.` followed by the profile
-   identifier. The container has the `internetClient` capability. It gets
-   read-execute on the program's folder, the OMGCode runtime folder for the
-   connection, and the relay program's folder, and read-write on the
-   configuration folder. Each grant is recorded before and after the ACL
-   change, the same way workspace grants are, and removing the profile
-   revokes them. A workspace container is never used: a model-run command
-   there must not reach the sign-in folder, and the workspace container must
-   not gain a network capability. On Linux the same paths go into Landlock.
-   The seccomp filter allows IP sockets and `AF_UNIX`
-   (`NetworkAccess::Internet` with `UnixSocketAccess::HostServices`), and
-   the run has its own cgroup with the usual tree limits. Neither platform
-   limits the child to Anthropic's hosts.
-4. **One process per OMGCode turn, launched locked down.** Every turn starts
-   one `claude` process. Its environment is built from nothing, with only
-   these variables:
-   - the platform basics: `SystemRoot`, `windir`, `LOCALAPPDATA`, a container
-     `USERPROFILE`/`HOME`, and on Linux `TMPDIR`;
+   identifier, with the `internetClient` capability. The operator grants it,
+   with `workspace claude-code-grant`, read-execute on the program's folder,
+   on the folder of the `omgcode` executable that runs the command (the
+   relay), and on the connection's runtime folder, and read-write on the
+   configuration folder. The runtime folder, `claude-code/<profile id>` in
+   application storage, is the only part of storage the container can read,
+   and it cannot write there. Each grant is recorded before and after its
+   ACL change, as workspace grants are. A profile with grants cannot be
+   removed; `workspace claude-code-revoke` revokes them all and deletes the
+   container profile. Every turn checks that each role holds an active grant
+   for the folder it names. A workspace container is never used: a model-run
+   command there must not reach the sign-in folder, and the workspace
+   container must not gain a network capability. On Linux, Landlock allows
+   reading the program and relay folders, the per-turn folder, the system
+   library and program folders, the network support files, and the random
+   and zero devices, and writing the configuration folder, the per-turn
+   temporary folder, and `/dev/null`. The seccomp filter allows IP sockets
+   and `AF_UNIX` (`NetworkAccess::Internet` with
+   `UnixSocketAccess::HostServices`). The run has the usual tree limits (4 GiB
+   of memory, 512 processes, and four hours of CPU time), so on Linux the
+   CLI must run in a delegated cgroup, as `run` does. Neither platform limits
+   the child to Anthropic's hosts.
+4. **One process per model request, launched locked down.** A tool turn
+   keeps one `claude` process for all its rounds; a text turn and each
+   compaction summary start their own. Each run writes a fresh per-turn
+   folder under the runtime folder that holds the system prompt, the MCP
+   configuration, the settings, and an empty working folder. Its environment
+   is built from nothing, with only these variables:
+   - on Windows, `SystemRoot`, `windir`, `LOCALAPPDATA`, `PATH` set to
+     `System32`, and `USERPROFILE` and `HOME` set to the container's profile
+     folder; on Linux, `HOME` and `TMPDIR` set to the per-turn temporary
+     folder, `PATH=/usr/bin:/bin`, and `LANG=C.UTF-8`;
    - `CLAUDE_CONFIG_DIR`;
    - `DISABLE_AUTOUPDATER=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
      `DISABLE_TELEMETRY=1`, and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`;
-   - MCP timeouts derived from the turn deadline.
+   - `CLAUDE_CODE_MAX_OUTPUT_TOKENS` from the reply budget;
+   - `MCP_TIMEOUT=60000`, and `MCP_TOOL_TIMEOUT=3600000` so that an approval
+     wait does not time the call out inside `claude`.
 
    The arguments are `-p`, `--output-format stream-json`, `--verbose`,
    `--include-partial-messages`, `--tools ""`, `--strict-mcp-config`,
-   `--mcp-config <file>`, `--setting-sources ""`, `--settings <file>` (built-in
-   plugins disabled), `--system-prompt-file <file>`,
-   `--no-session-persistence`, `--disable-slash-commands`,
-   `--allowedTools mcp__omgcode__*`, `--permission-prompts none`,
-   `--permission-mode dontAsk`, `--model <model>`, and `--effort <effort>`
-   when the session has an effort. The working folder is an empty folder in
-   OMGCode's private storage. The prompt goes to stdin as text, and stdin is
-   then closed.
+   `--mcp-config <file>`, `--setting-sources ""`, `--settings <file>` (the
+   four built-in plugins `cc-plugin-agents-md`, `cc-plugin-privacy`,
+   `cc-plugin-plugin-authoring`, and `cc-plugin-telemetry` disabled),
+   `--system-prompt-file <file>`, `--no-session-persistence`,
+   `--disable-slash-commands`, `--permission-prompts none`,
+   `--permission-mode dontAsk`, `--model <model>`,
+   `--allowedTools mcp__omgcode__*` when tools are offered, and
+   `--effort <effort>` when the session has one (`low` to `max`; `none` and
+   `minimal` are refused as `effort_refused`). A run without tools gets an
+   MCP configuration with no servers. The prompt goes to stdin as text, and
+   stdin is then closed. The process deadline is one hour; each model
+   request also waits at most the turn timeout (`chat`) or 600 seconds
+   (`session compact`).
 5. **Lockdown is checked, and it fails closed.** The `system/init` event must
    satisfy all of these, or the tree is terminated and the turn fails with
    `claude_code_lockdown`:
-   - exactly the offered tools, named `mcp__omgcode__<tool>`;
-   - exactly one MCP server, `omgcode`, with status `connected`;
+   - exactly the offered tools, named `mcp__omgcode__<tool>`, or no tools and
+     no MCP server for a run without tools;
+   - otherwise exactly one MCP server, `omgcode`, with status `connected`;
    - no plugins, skills, or slash commands;
    - `apiKeySource` `none`.
 
    Because that event follows the first request, each tool block is checked
    too. A block that names anything other than an offered tool terminates the
-   tree at once, from its first streamed `content_block_start`.
+   tree at once, from its first streamed `content_block_start`. No call is
+   returned to the runtime before the init event passed.
 6. **Tools come back through a relay over a local pipe.** The MCP
-   configuration starts `omgcode mcp-relay` as the only server. The relay
-   runs in the same sandbox and copies bytes between its stdio and one local
-   channel. It sends a per-turn nonce first. On Windows the channel is a
-   named pipe that admits the user and the connection's container. Its
-   mandatory label is Low with no-write-up, and the server accepts a client
-   only after the client's token shows that container's SID. On Linux it is
-   a socket in a 0700 per-turn folder, with a same-user peer check. All MCP
-   handling stays in the trusted process. It answers `server/discover` with
-   `-32601` so the observed client falls back to `initialize` at
+   configuration starts the hidden `omgcode mcp-relay <address>` subcommand
+   as the only server. The relay runs in the same sandbox and copies bytes
+   between its stdio and one local channel. It sends a per-turn nonce from
+   its environment first, and the trusted process compares it in constant
+   time. On Windows the channel is a named pipe that admits the user and the
+   connection's container. Its mandatory label is Low with no-write-up, and
+   the server accepts a client only after the client's token shows that
+   container's SID. On Linux it is a socket in a 0700 per-turn folder. All
+   MCP handling stays in the trusted process. It answers `server/discover`
+   with `-32601` so the observed client falls back to `initialize` at
    `2025-11-25`, offers only `tools`, and never sends a request to the
-   client.
+   client. A relay that does not connect within 60 seconds fails the run.
 7. **The adapter is an ordinary `ToolModel`.** `ClaudeCodeModel` implements
    the core `ToolModel` trait. On a round it returns each pending
-   `tools/call` as a tool call: the identifier is its `claudecode/toolUseId`,
-   the name is the MCP name, and the arguments are re-serialised. A round
-   holds at most eight calls; any others wait for the next round. The MCP
-   request stays open while the turn runtime parses the call, applies the
-   workspace policy, waits for any approval, dispatches, filters, and
-   journals it, exactly as for every other provider. The next round answers
-   each held request with the result text. The `result` event ends the turn
-   with its final text. No tool runs outside the runtime's dispatcher, and
-   claude's own permission system decides nothing.
+   `tools/call` as a tool call: the identifier is its `claudecode/toolUseId`
+   (or `omgcode_call_N` when absent), the name is the MCP name, and the
+   arguments are re-serialised. A round holds at most eight calls and
+   returns once it is full, once every announced tool block has arrived, or
+   200 ms after the last call. The MCP request stays open while the turn
+   runtime parses the call, applies the workspace policy, waits for any
+   approval, dispatches, filters, and journals it, exactly as for every
+   other provider. The next round answers each held request with the result
+   text the runtime recorded, matched by call identifier. The `result` event
+   ends the turn with its final text. No tool runs outside the runtime's
+   dispatcher, and claude's own permission system decides nothing.
 8. **OMGCode's journal is the only history.** Because each process lives for
-   one turn with `--no-session-persistence`, OMGCode renders the earlier
-   conversation into the first prompt. The labelled history text is the same
-   that compaction and replay send. Within a turn, claude keeps its own
-   context. Compaction summaries for this connection go through the same
-   launch with no tools.
+   one turn with `--no-session-persistence`, OMGCode renders the assembled
+   messages into its first prompt. System messages go to the system prompt
+   file, followed by a note that names the `mcp__omgcode__` tools. Every
+   other message is written to stdin as one transcript, oldest first, each
+   under a label that carries a random per-turn marker. The labels are
+   advice to the model, not a security boundary: the transcript is
+   untrusted conversation data, as every provider's history is. The
+   rendered prompt is at most 4 MiB. Within a turn, claude keeps its own
+   context.
 9. **Failures are named.** A failure that the launch, sign-in, lockdown,
    protocol, or child exit causes is reported as one of
    `claude_code_not_signed_in`, `claude_code_lockdown`,
-   `claude_code_protocol`, or `claude_code_failed`. Cancellation and the turn
-   deadline terminate the tree, and its end is observed before the turn
-   returns.
-10. **Terms and readiness.** The connection is personal use of the operator's
-    own sign-in to the unmodified binary. OMGCode offers no Claude.ai sign-in
-    and stores, reads, and brokers no Claude credential. It is not evidence
-    of Anthropic approval. The release requirement for Claude subscription
-    support stays open until Anthropic approves the route or documents a
-    supported one.
+   `claude_code_protocol`, or `claude_code_failed`. Cancellation and the
+   deadlines terminate the tree, and its end is observed before the turn
+   returns. Each request manifest records the endpoint label
+   `claude-code:<profile>`, which is not a URL.
+10. **The trusted CLI only, for now.** `chat --provider-profile` and
+    `session compact --provider-profile` resolve a `claude_code` profile.
+    Every other route that resolves a connection, including the desktop
+    shell, the active selection, and `models`, refuses it with
+    `claude_code_cli_only`.
+11. **Terms and readiness.** The connection is personal use of the
+    operator's own sign-in to the unmodified binary. OMGCode offers no
+    Claude.ai sign-in and stores, reads, and brokers no Claude credential.
+    It is not evidence of Anthropic approval. The release requirement for
+    Claude subscription support stays open until Anthropic approves the
+    route or documents a supported one.
 
 ## Alternatives considered
 
@@ -204,14 +244,21 @@ Haiku request with one tool call.
   can connect to any pathname Unix socket the user can reach. The child runs
   Anthropic's binary with no tools. The sandbox mainly limits what the
   binary can read and write.
+- On Windows the container can read every file in the program's folder.
+  A `claude` update that moves the program to another folder makes the
+  recorded program stale; the connection is then refused until it is
+  revoked, removed, and recorded again.
 - The lockdown check follows the first model request. Tool-block checks,
   `--tools ""`, `--permission-prompts none`, and the sandbox cover that gap.
 - The CLI's stream and MCP shapes are not a published stable contract. A
   `claude` update can break the adapter, and the lockdown check turns most
   such changes into a refused turn.
-- Not yet verified: a turn inside the AppContainer, Linux, desktop
-  selection and in-turn approvals (a later change), other plans, rate-limit
-  shapes, and long turns.
+- A fake `claude` drives the whole path in the tests, on Windows inside the
+  connection's real AppContainer with real grants: the confined launch, the
+  pipe and nonce, the MCP server, the turn runtime, the CLI commands, and
+  compaction. Not yet verified: a signed-in turn of the real `claude`
+  inside the AppContainer, Linux, the desktop shell and in-turn approvals (a
+  later change), other plans, rate-limit shapes, and long turns.
 
 ## References
 

@@ -4,8 +4,9 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 use omgcode_core::control::{
-    AssignmentFailure, ContainerGrantAccess, ControlError, ControlStore, CredentialId, FolderGrant,
-    PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
+    AssignmentFailure, ClaudeCodeDeclaration, ContainerGrantAccess, ControlError, ControlStore,
+    CredentialId, FolderGrant, PackageProfileDeclaration, ProfileDeclaration,
+    ProviderProfileDeclaration, Revocations,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -254,6 +255,43 @@ pub(crate) enum WorkspaceCommand {
         #[arg(long)]
         revision: u64,
     },
+    /// Record a Claude Code connection that drives the signed-in `claude`
+    /// program for `chat --provider-profile NAME` (ADR-0109).
+    ///
+    /// Sign `claude` in first with `claude auth login`, with
+    /// CLAUDE_CONFIG_DIR set to a folder kept for this connection alone,
+    /// outside application storage, the development root, and every
+    /// workspace. OMGCode records that folder's identity and never reads,
+    /// copies, or stores the Claude credential in it. The connection is for
+    /// the operator's own use; Anthropic has not approved OMGCode as a
+    /// Claude Code client. On Windows grant its folders next with
+    /// `claude-code-grant`.
+    ClaudeCodeAdd {
+        #[arg(long)]
+        name: String,
+        /// The `claude` program (`claude.exe` on Windows).
+        #[arg(long)]
+        program: PathBuf,
+        /// The folder `claude auth login` signed in to.
+        #[arg(long)]
+        config_folder: PathBuf,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Grant a Claude Code connection's own AppContainer the folders its
+    /// process needs, Windows only: read and execute on the `claude`
+    /// program's folder, on this executable's folder (the MCP relay), and on
+    /// the connection's runtime folder in application storage, and read and
+    /// write on the sign-in folder.
+    ClaudeCodeGrant {
+        name: String,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Revoke every grant of a Claude Code connection and delete its
+    /// AppContainer profile. A connection is removed with
+    /// `provider-profile-remove` only after this.
+    ClaudeCodeRevoke { name: String },
 }
 
 /// Sign a profile in with ChatGPT. The settings store is not held while the
@@ -860,6 +898,55 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
         }
         WorkspaceCommand::ProviderSignout { name, revision } => {
             provider_signout(data_root, &name, revision)
+        }
+        WorkspaceCommand::ClaudeCodeAdd {
+            name,
+            program,
+            config_folder,
+            revision,
+        } => {
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let profile = store
+                .add_claude_code_profile(
+                    &ClaudeCodeDeclaration {
+                        name,
+                        program,
+                        config_folder,
+                    },
+                    revision,
+                )
+                .map_err(control_error)?;
+            print_json(&json!({
+                "provider_profile_id": profile.id(),
+                "snapshot": store.snapshot(),
+            }))
+        }
+        WorkspaceCommand::ClaudeCodeGrant { name, revision } => {
+            let relay = crate::relay_program()?;
+            let relay_folder = relay.parent().ok_or_else(|| {
+                CliError::new("configuration", "The OMGCode executable has no folder")
+            })?;
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let grants = store
+                .grant_claude_code(&name, relay_folder, revision)
+                .map_err(control_error)?;
+            print_json(&json!({
+                "claude_code_grants": grants,
+                "snapshot": store.snapshot(),
+            }))
+        }
+        WorkspaceCommand::ClaudeCodeRevoke { name } => {
+            let mut store = open_existing(data_root)?
+                .ok_or_else(|| CliError::new("control", "Workspace control is not initialized"))?;
+            let revocation = store
+                .revoke_claude_code_grants(&name)
+                .map_err(control_error)?;
+            print_json(&json!({
+                "revocation": revocation,
+                "snapshot": store.snapshot(),
+            }))
         }
         WorkspaceCommand::ContainerRevoke { grant } => {
             let mut store = open_existing(data_root)?

@@ -22,6 +22,7 @@ mod context;
 mod credential_source;
 pub mod desktop;
 mod error;
+mod model_client;
 mod paths;
 mod secrets;
 mod sessions;
@@ -37,9 +38,11 @@ pub use context::{CompactionMeter, ContextMeter, compact_journal, summary_output
 pub use credential_source::{
     ConnectionSource, LmToken, LocalConnection, LocalEndpoint, ProfileCheckError,
     ProfileConnection, TokenSource, check_profile_selectable, profile_selectability,
-    resolve_local_connection, resolve_local_endpoint, resolve_profile_connection,
+    resolve_claude_code, resolve_local_connection, resolve_local_endpoint,
+    resolve_profile_connection,
 };
 pub use error::{AppError, ErrorKind};
+pub use model_client::ModelClient;
 pub use paths::data_root;
 pub use secrets::{StreamRedactor, read_lm_token, redact_known_secret};
 pub use sessions::create_session;

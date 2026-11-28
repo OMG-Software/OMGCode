@@ -12,12 +12,13 @@ use omgcode_core::context::{
     MAX_SUMMARY_BYTES, SummaryReply, compact,
 };
 use omgcode_core::prompt::{self, ConversationMessage};
-use omgcode_core::provider::{LocalModelClient, ProviderError};
+use omgcode_core::provider::ProviderError;
 use omgcode_core::session::SessionJournal;
 use omgcode_core::turn::CancelToken;
 use serde::Serialize;
 
 use crate::error::{AppError, ErrorKind};
+use crate::model_client::ModelClient;
 use crate::secrets::redact_known_secret;
 use crate::tool_mode::tool_replay_allowed;
 
@@ -45,7 +46,7 @@ pub fn summary_output_tokens(context_tokens: u64) -> u32 {
 pub fn compact_journal(
     journal: &mut SessionJournal,
     data_root: &Path,
-    client: &LocalModelClient,
+    client: &ModelClient,
     token: Option<&str>,
     summary_budget: ContextBudget,
     cancel: &CancelToken,

@@ -6,6 +6,44 @@ Changes are recorded here before a release version is assigned.
 
 ### Added
 
+- Version 0.72.0 adds a `claude_code` connection that drives the operator's
+  own signed-in, unmodified Claude Code CLI (`claude`) from the trusted CLI
+  (ADR-0109). The operator signs `claude` in with `claude auth login` and a
+  `CLAUDE_CONFIG_DIR` kept for this connection; OMGCode offers no Claude
+  sign-in and never reads, copies, stores, or passes the Claude credential.
+  `workspace claude-code-add` records the canonical program and the sign-in
+  folder's identity, `workspace claude-code-grant` grants the connection's own
+  AppContainer (`OMGCode.ClaudeCode.<profile id>`, with `internetClient`)
+  read-execute on the program's folder, the running `omgcode` executable's
+  folder, and a runtime folder in storage, and read-write on the sign-in
+  folder, and `workspace claude-code-revoke` revokes them and deletes the
+  container profile; a profile with grants cannot be removed. `chat
+  --provider-profile` and `session compact --provider-profile` start one
+  confined `claude -p` per model request, with an environment built from
+  nothing, `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, the
+  built-in plugins disabled, slash commands, session persistence,
+  auto-memory, auto-update, and telemetry off, and stream-json output read
+  through bounded parsers. Its `system/init` report must list exactly the
+  offered tools, one connected `omgcode` MCP server, no plugin, skill, or
+  slash command, and `apiKeySource` `none`, and every tool block must name an
+  offered tool, or the tree is ended with `claude_code_lockdown`. OMGCode's
+  tools reach `claude` only through the hidden `omgcode mcp-relay`
+  subcommand, which copies MCP bytes after a per-turn nonce over a named pipe
+  that admits only the connection's container (a `0700` socket on Linux); the
+  trusted process serves MCP and holds each `tools/call` open while the turn
+  runtime checks, approves, dispatches, and journals it as for every other
+  provider. Failures are `claude_code_not_signed_in`, `claude_code_protocol`,
+  and `claude_code_failed`; a request manifest records the endpoint label
+  `claude-code:<profile>`. The desktop shell, the active selection, and
+  `models` refuse the profile with `claude_code_cli_only`. The platform crate
+  gains a confined spawn with streamed standard input and output and a
+  container-only local pipe and private Unix socket. Two harnessless test
+  binaries use a fake `claude`, on Windows inside the real AppContainer with
+  real grants, through the core runtime and the CLI commands. It is a minor
+  version because the public `ProviderError` and `ProviderKind` enums gain
+  variants. No signed-in turn of the real `claude` ran inside the
+  AppContainer, nothing ran on Linux, and it is personal use, not evidence of
+  Anthropic approval: the Claude subscription requirement stays open.
 - Version 0.68.0 adds **Generate toolchain profiles from local packages** to
   the **Toolchain profiles** group of the desktop `settings` window. The
   local packages are the toolchains installed on this computer, and it

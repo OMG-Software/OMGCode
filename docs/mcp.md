@@ -5,6 +5,21 @@ exist yet. OMGCode will act as an MCP host with Rust-owned clients for
 external servers. Exposing OMGCode itself as an MCP server is a separate
 future capability, not required by this initial client design.
 
+One narrow MCP server exists, and it is not that capability. A
+[Claude Code connection](provider-authentication.md#claude-code-connection-adr-0109)
+offers OMGCode's own model tools to the `claude` process of one turn through
+a stdio server that only that process can reach
+([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
+The hidden `omgcode mcp-relay` subcommand runs in the process's sandbox and
+copies bytes, after a per-turn nonce, over a pipe or socket that admits only
+that sandbox. The trusted process parses every line (at most 64 KiB),
+answers `server/discover` with `-32601`, `initialize` at protocol version
+`2025-11-25` with the `tools` capability only, `tools/list` with the tools
+the turn offers, and `tools/call` with the result the turn runtime recorded
+after its usual policy checks, approvals, and journals. It sends no request
+to the client, offers no resources or prompts, and grants nothing. No
+external MCP server can be added, and no model tool reaches one.
+
 ## Initial scope
 
 Support local stdio servers and remote Streamable HTTP servers. Provide tool

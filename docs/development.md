@@ -494,6 +494,41 @@ No real sign-in was made with these commands. On 2026-11-24 `chat
 the desktop (ADR-0096). A non-streamed one-call and a streamed two-call
 read and list tool turn then finished (ADR-0097).
 
+### Use a signed-in Claude Code CLI
+
+ADR-0109 adds a `claude_code` connection that drives the operator's own
+signed-in `claude` program. Sign it in first, in a terminal, with a folder
+kept for OMGCode alone; OMGCode never reads that folder's files. The paths
+and names below are placeholders:
+
+```powershell
+$env:CLAUDE_CONFIG_DIR = "C:\omgcode-claude"; claude auth login
+```
+
+```text
+omgcode --data-dir C:\omgcode-data workspace claude-code-add --name example-claude --program C:\Users\example\.local\bin\claude.exe --config-folder C:\omgcode-claude --revision 10
+omgcode --data-dir C:\omgcode-data workspace claude-code-grant example-claude --revision 11
+omgcode --data-dir C:\omgcode-data chat --workspace C:\dev\project --provider-profile example-claude --model sonnet --context-tokens 200000 --stream "Summarize README.md"
+omgcode --data-dir C:\omgcode-data workspace claude-code-revoke example-claude
+omgcode --data-dir C:\omgcode-data workspace provider-profile-remove example-claude --revision 16
+```
+
+`claude-code-add` records the canonical program and the sign-in folder's
+identity; a program that is not a regular file (an `.exe` on Windows) and a
+folder that holds or overlaps application storage, the development root, or
+a workspace are refused. `claude-code-grant` is Windows only and grants the
+connection's own AppContainer the four folders that
+[execution](execution.md#claude-code-connection-process) lists, including
+the folder of the `omgcode` executable that runs it. Run `chat` and `session
+compact` from that same executable, because it is the MCP relay. On Linux,
+run them inside `systemd-run --user --scope -p Delegate=yes`, as for `run`.
+`--model` takes a Claude Code model name or alias, and `--reasoning-effort`
+takes `low` to `max`. A turn that the CLI reports as not signed in fails with
+`claude_code_not_signed_in`. `models`, the desktop shell, and the active
+selection refuse the profile with `claude_code_cli_only`. See
+[provider authentication](provider-authentication.md#claude-code-connection-adr-0109).
+No signed-in turn of the real `claude` has run inside the AppContainer.
+
 ## Trusted runs
 
 Enable `execute`, declare a toolchain profile, and run a program. On Windows,

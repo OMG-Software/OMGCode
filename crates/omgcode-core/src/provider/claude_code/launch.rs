@@ -33,7 +33,7 @@ use super::stream::{
     check_toolless_lockdown, parse_line,
 };
 use crate::prompt::ModelMessage;
-use crate::provider::{ProviderError, ReasoningEffort};
+use crate::provider::{ModelReply, ProviderError, ReasoningEffort};
 use crate::turn::{CancelToken, ToolDefinition};
 
 /// The MCP server name, so every tool is `mcp__omgcode__<name>`.
@@ -152,8 +152,23 @@ impl ClaudeCodeClient {
         Self { config }
     }
 
+    /// One reply with no tools, as [`Self::complete_streaming`] without
+    /// forwarding text.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::complete_streaming`].
+    pub fn complete(
+        &self,
+        messages: &[ModelMessage],
+        cancel: &CancelToken,
+    ) -> Result<ModelReply, ProviderError> {
+        self.complete_streaming(messages, &mut |_| {}, cancel)
+    }
+
     /// One reply with no tools: chat without model tools, and compaction.
-    /// Text deltas of the main agent go to `on_text` as they arrive.
+    /// Text deltas of the main agent go to `on_text` as they arrive. The
+    /// reply's finish reason is `stop` and it reports no usage.
     ///
     /// # Errors
     ///
@@ -164,12 +179,16 @@ impl ClaudeCodeClient {
         messages: &[ModelMessage],
         on_text: &mut dyn FnMut(&str),
         cancel: &CancelToken,
-    ) -> Result<String, ProviderError> {
+    ) -> Result<ModelReply, ProviderError> {
         let mut session = self.start(messages, &[])?;
         match session.run(cancel, Some(on_text))? {
-            Progress::Finished(text) => {
+            Progress::Finished(content) => {
                 session.finish();
-                Ok(text)
+                Ok(ModelReply {
+                    content,
+                    finish_reason: "stop".to_owned(),
+                    usage: None,
+                })
             }
             Progress::Calls(_) => Err(failure(ClaudeCodeFailure::Protocol)),
         }

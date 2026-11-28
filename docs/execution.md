@@ -903,6 +903,50 @@ its target, and every later action in the same session carries
 `after_web_content` (see the
 [model action journal](workspace-permissions.md#model-action-journal)).
 
+### Claude Code connection process
+
+Version 0.72.0 starts the operator's signed-in `claude` program as a model
+connection
+([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
+It is not a run: no model tool starts it, it uses no toolchain profile and no
+workspace container, and the run journal does not record it. Each model
+request of a `chat` or `session compact` that names a `claude_code` profile
+starts one confined process through the same streaming spawn as trusted runs,
+and a tool turn keeps that process for all its rounds.
+
+- **Container.** On Windows the process runs in the connection's own
+  AppContainer, `OMGCode.ClaudeCode.<profile id as 32 hex digits>`, with the
+  `internetClient` capability. `omgcode workspace claude-code-grant <name>
+  --revision <n>` grants it read-execute on the program's folder, on the
+  folder of the `omgcode` executable that runs the command (the MCP relay),
+  and on the connection's runtime folder (`claude-code/<profile id>` in
+  application storage, created by the grant), and read-write on the sign-in
+  folder. Each grant is recorded before and after its ACL change, with the
+  same grant reserve as workspace grants. `omgcode workspace
+  claude-code-revoke <name>` revokes them all and deletes the container
+  profile; it needs no revision. A profile with grants cannot be removed,
+  and a turn refuses to start until every role holds an active grant for
+  the folder it names. A folder that holds the development root, a
+  workspace, or application storage, or is a drive root or the home folder
+  or its ancestor, is refused.
+- **Linux.** Landlock allows reading the program and relay folders, the
+  per-turn folder, `/usr`, `/lib`, `/lib64`, `/bin`, the network support
+  files, and `/dev/zero`, `/dev/random`, and `/dev/urandom`, and writing the
+  sign-in folder, the per-turn temporary folder, and `/dev/null`. The
+  seccomp filter allows IP sockets and `AF_UNIX`. No grant is recorded; the
+  runtime folder is created with mode `0700`.
+- **Limits.** The process tree has 4 GiB of memory, 512 processes, four
+  hours of CPU time, a one-hour deadline, 64 KiB of captured standard error,
+  and no disk-growth limit. On Linux the CLI must run in a delegated cgroup
+  v2, as for `run`. Cancellation, a lockdown failure, and every other
+  failure end the whole tree, and the end is observed before the turn
+  returns.
+- **Standard streams.** Standard input carries the rendered conversation
+  and is then closed. Standard output is read as bounded stream-json lines;
+  nothing it says is trusted. The tool channel is a named pipe (Windows) or a
+  socket in a `0700` per-turn folder (Linux) that the relay reaches after a
+  per-turn nonce, not an inherited handle.
+
 ### Toolchain profiles
 
 Profiles are declared by the operator. Nothing is recorded automatically: the

@@ -595,6 +595,27 @@ impl ControlStore {
         let runtime_folder =
             claude_code_runtime_folder(&self.data_directory.live_path()?, profile_id);
         let container = if platform_grants_supported() {
+            const MISSING: ControlError = ControlError::GrantRefused(
+                "the Claude Code connection's container lacks an active grant for one of its folders; run `workspace claude-code-grant` first",
+            );
+            let active = |role: ClaudeCodeGrantRole| {
+                self.snapshot
+                    .claude_code_grants
+                    .iter()
+                    .filter(move |status| {
+                        status.grant.profile_id == profile_id
+                            && status.grant.role == role
+                            && status.state == ContainerGrantState::Active
+                    })
+            };
+            // Every role is checked before any folder is opened: the runtime
+            // folder exists only once it has been granted.
+            if ClaudeCodeGrantRole::ALL
+                .iter()
+                .any(|role| active(*role).next().is_none())
+            {
+                return Err(MISSING);
+            }
             let runtime = DirectoryRecord::capture(&runtime_folder)?;
             let relay = DirectoryRecord::capture(relay_folder)?;
             for (role, expected) in [
@@ -603,16 +624,8 @@ impl ControlStore {
                 (ClaudeCodeGrantRole::Runtime, &runtime),
                 (ClaudeCodeGrantRole::Relay, &relay),
             ] {
-                let granted = self.snapshot.claude_code_grants.iter().any(|status| {
-                    status.grant.profile_id == profile_id
-                        && status.grant.role == role
-                        && status.state == ContainerGrantState::Active
-                        && status.grant.directory.same_directory(expected)
-                });
-                if !granted {
-                    return Err(ControlError::GrantRefused(
-                        "the Claude Code connection's container lacks an active grant for one of its folders; run `workspace claude-code-grant` first",
-                    ));
+                if !active(role).any(|status| status.grant.directory.same_directory(expected)) {
+                    return Err(MISSING);
                 }
             }
             Some(claude_code_container(profile_id)?)
