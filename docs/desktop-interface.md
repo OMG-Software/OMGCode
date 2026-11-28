@@ -312,7 +312,7 @@ has not been run, so how it behaves in a delegated cgroup is unverified.
 
 ## Windows and commands
 
-The shell has three webview windows and 67 commands (31 in `main`, 3 in `approvals`, and 33 in `settings`). No other command exists.
+The shell has three webview windows and 70 commands (31 in `main`, 3 in `approvals`, and 36 in `settings`). No other command exists.
 No command accepts a host path. Sessions are addressed by UUID, workspaces by
 their registered identifier, and approvals by identifier.
 
@@ -2372,7 +2372,7 @@ What it does not do:
 
 | Item | Value |
 | --- | --- |
-| Commands | 67 |
+| Commands | 70 |
 | Git status changed paths | 1,000, and a 10-second deadline |
 | Sessions per listing | 5,000 |
 | Search terms and length | 16 terms, 256 characters |

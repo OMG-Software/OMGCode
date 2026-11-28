@@ -265,15 +265,15 @@ fn build_script_declares_the_shared_command_list() {
     assert!(build.contains("include!(\"src/command_names.rs\")"));
     assert!(build.contains(".commands(COMMAND_NAMES)"));
 
-    // And the shared list holds the 67 unique policy names.
+    // And the shared list holds the 70 unique policy names.
     let listed: Vec<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
         .filter_map(|rest| rest.strip_suffix("\","))
         .collect();
     let unique: BTreeSet<&str> = listed.iter().copied().collect();
-    assert_eq!(listed.len(), 67);
-    assert_eq!(unique.len(), 67);
+    assert_eq!(listed.len(), 70);
+    assert_eq!(unique.len(), 70);
     let policy: Vec<&str> = Command::ALL.into_iter().map(Command::name).collect();
     assert_eq!(listed, policy);
 }
@@ -384,7 +384,7 @@ fn frontend_clients_call_only_commands_the_policy_gives_their_window() {
         .collect();
     assert_eq!(settings_calls, settings_commands);
 
-    // ...and together they cover all 67 policy commands.
+    // ...and together they cover all 70 policy commands.
     let union: BTreeSet<String> = main_calls
         .union(&approval_calls)
         .cloned()
@@ -642,10 +642,10 @@ fn generate_handler_registers_exactly_the_policy_commands() {
         .map(|entry| entry.rsplit("::").next().expect("segment"))
         .collect();
 
-    // Then they are the 67 shared names, once each.
+    // Then they are the 70 shared names, once each.
     let unique: BTreeSet<&str> = registered.iter().copied().collect();
-    assert_eq!(registered.len(), 67);
-    assert_eq!(unique.len(), 67);
+    assert_eq!(registered.len(), 70);
+    assert_eq!(unique.len(), 70);
     let shared: BTreeSet<&str> = COMMAND_NAMES_SOURCE
         .lines()
         .filter_map(|line| line.trim().strip_prefix('"'))
@@ -662,7 +662,7 @@ fn generate_handler_registers_exactly_the_policy_commands() {
 #[test]
 fn every_handler_authorizes_its_own_command_before_touching_the_service() {
     let handlers = all_handlers();
-    assert_eq!(handlers.len(), 67);
+    assert_eq!(handlers.len(), 70);
     for handler in handlers {
         // Given the command the function name denotes.
         let command = Command::ALL
@@ -796,7 +796,7 @@ fn handler_parameters_match_the_keys_the_frontend_passes() {
     }
     assert_eq!(
         expected.len(),
-        67,
+        70,
         "all commands are called by the frontend"
     );
 
