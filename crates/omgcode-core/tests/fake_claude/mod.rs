@@ -17,6 +17,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use omgcode_core::provider::claude_code::RELAY_NONCE_VARIABLE;
@@ -239,10 +240,19 @@ pub fn hold_alive(folder: &Path, name: &str) {
     if file.lock().is_err() {
         return;
     }
+    // An identifier that was not written leaves the file empty, which
+    // `processes_ended` reports as never locked by its process.
     let _ = file.write_all(std::process::id().to_string().as_bytes());
-    // Never closed, so the lock lasts as long as the process.
-    std::mem::forget(file);
+    // Kept open until the process exits, so the lock lasts as long as it.
+    ALIVE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(file);
 }
+
+/// The alive locks this process holds; nothing removes them, so each is
+/// released only when the process exits.
+static ALIVE: Mutex<Vec<fs::File>> = Mutex::new(Vec::new());
 
 /// Wait up to `limit` for the fake and the relay that left their files in
 /// `sign_in` to end: each file must have been locked and written by its
