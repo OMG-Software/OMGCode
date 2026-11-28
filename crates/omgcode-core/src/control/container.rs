@@ -410,6 +410,11 @@ impl ControlStore {
         let directory = DirectoryRecord::capture(path)?;
         self.check_storage_overlap(&directory)?;
         self.check_grant_scope(&workspace.directory, &directory, access)?;
+        if self.overlaps_claude_code_sign_in(&directory, None)? {
+            return Err(ControlError::GrantRefused(
+                "a container grant must not overlap a Claude Code sign-in folder",
+            ));
+        }
         if self.snapshot.container_grants.iter().any(|status| {
             status.grant.workspace_id == workspace_id
                 && status.grant.directory.same_directory(&directory)
@@ -524,10 +529,11 @@ impl ControlStore {
         Ok(())
     }
 
-    /// Events and bytes that must stay free so every outstanding grant can
-    /// still reach a confirmed revocation.
+    /// Events and bytes that must stay free so every outstanding grant,
+    /// workspace or Claude Code (ADR-0109), can still reach a confirmed
+    /// revocation.
     pub(super) fn grant_reserve(snapshot: &ControlSnapshot) -> (usize, usize) {
-        let events: usize = snapshot
+        let workspace_events: usize = snapshot
             .container_grants
             .iter()
             .map(|status| match status.state {
@@ -536,6 +542,8 @@ impl ControlStore {
                 ContainerGrantState::Revoking => 1,
             })
             .sum();
+        let events =
+            workspace_events.saturating_add(super::claude_code::grant_reserve_events(snapshot));
         (events, events.saturating_mul(GRANT_EVENT_RESERVE_BYTES))
     }
 }
@@ -547,7 +555,7 @@ pub(super) const fn uses_grant_reserve(action: &Action) -> bool {
         Action::ContainerGrantApplied { .. }
             | Action::ContainerRevokeRequested { .. }
             | Action::ContainerGrantRevoked { .. }
-    )
+    ) || super::claude_code::uses_grant_reserve(action)
 }
 
 /// Validate and apply one grant action during replay or append preflight.
@@ -637,7 +645,7 @@ fn transition(
 }
 
 /// A container SID: `S-1-15-2-` followed by decimal sub-authorities.
-fn valid_sid(text: &str) -> bool {
+pub(super) fn valid_sid(text: &str) -> bool {
     text.len() <= MAX_SID_CHARS
         && text.strip_prefix("S-1-15-2-").is_some_and(|rest| {
             rest.split('-')

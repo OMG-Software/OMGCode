@@ -16,12 +16,15 @@ use clap::{Args, Parser, Subcommand};
 use omgcode_app::{
     AppError, ChatClients, ChatHooks, ChatSettings, ChatStreamEvent, ChatTurnInput,
     ConnectionSource, DEFAULT_TURN_TIMEOUT_SECONDS, LmToken, LocalConnection,
-    MODEL_TOOLS_SUPPORTED, compact_journal, create_session, data_root, read_lm_token,
-    redact_known_secret, resolve_local_connection, run_chat_turn_with_clients,
+    MODEL_TOOLS_SUPPORTED, ModelClient, compact_journal, create_session, data_root, read_lm_token,
+    redact_known_secret, resolve_claude_code, resolve_local_connection, run_chat_turn_with_clients,
 };
 use omgcode_core::context::{ContextBudget, DEFAULT_COMPACT_THRESHOLD};
-use omgcode_core::control::ProviderKind;
+use omgcode_core::control::{ClaudeCodePaths, ProviderKind};
 use omgcode_core::prompt::{self, BASE_PROMPT, BASE_PROMPT_VERSION};
+use omgcode_core::provider::claude_code::{
+    ClaudeCodeClient, ClaudeCodeConfig, RELAY_NONCE_VARIABLE, relay,
+};
 use omgcode_core::provider::{ListedModel, LocalModelClient, LocalModelConfig, ReasoningEffort};
 use omgcode_core::run::{InterruptWatch, watch_interrupt};
 use omgcode_core::session::{NativePath, SessionJournal};
@@ -29,12 +32,19 @@ use omgcode_core::skills::SkillName;
 use omgcode_core::turn::{CancelToken, DEFAULT_MAX_TOOL_CALLS};
 use serde::Serialize;
 use serde_json::json;
+use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 /// Whether trusted runs and toolchain profiles exist on this platform.
 const RUN_SUPPORTED: bool = cfg!(any(target_os = "linux", windows));
+
+/// The endpoint label a Claude Code connection records in each request
+/// manifest, followed by the profile name (ADR-0109). It is not a URL and
+/// no request is sent to it.
+const CLAUDE_CODE_ENDPOINT_PREFIX: &str = "claude-code:";
 
 #[derive(Parser)]
 #[command(name = "omgcode", version, about = "OMGCode local core prototype")]
@@ -101,6 +111,12 @@ enum Command {
         #[command(subcommand)]
         action: actions_cli::ActionsCommand,
     },
+    /// The MCP relay a confined `claude` process starts for one turn
+    /// (ADR-0109). It copies bytes between its standard streams and the
+    /// turn's local channel and handles no MCP message itself. Not for
+    /// operators.
+    #[command(name = "mcp-relay", hide = true)]
+    McpRelay { address: OsString },
 }
 
 #[derive(Subcommand)]
@@ -366,12 +382,14 @@ fn main() -> ExitCode {
 }
 
 /// The stored spellings of the provider kinds `filter` keeps, in the order
-/// `ProviderKind::ALL` lists them. Every kind is served by the one
-/// OpenAI-compatible adapter (ADR-0092).
+/// `ProviderKind::ALL` lists them. Every kind but `claude_code` is served by
+/// the one OpenAI-compatible adapter (ADR-0092); `claude_code` runs a
+/// program instead, reads no stored credential, and is reported as
+/// `claude_code_connection` (ADR-0109).
 fn adapter_kinds(filter: impl Fn(ProviderKind) -> bool) -> Vec<&'static str> {
     ProviderKind::ALL
         .into_iter()
-        .filter(|kind| filter(*kind))
+        .filter(|kind| !kind.runs_program() && filter(*kind))
         .map(ProviderKind::as_str)
         .collect()
 }
@@ -438,6 +456,7 @@ fn run(cli: Cli) -> Result<(), CliError> {
             },
             "skills": skills_cli::capability(),
             "mcp": false,
+            "claude_code_connection": RUN_SUPPORTED,
             "memories": false,
             "sandbox_backend": if cfg!(target_os = "linux") {
                 "landlock"
@@ -516,7 +535,26 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Command::Skills { action } => skills_cli::run(action, &data_root(cli.data_dir)?),
         Command::Approvals { action } => approvals_cli::run(action, &data_root(cli.data_dir)?),
         Command::Actions { action } => actions_cli::run(action, &data_root(cli.data_dir)?),
+        Command::McpRelay { address } => mcp_relay(&address),
     }
+}
+
+/// Relay one turn's MCP bytes. The nonce comes from the environment the
+/// trusted process wrote into the MCP configuration; standard output carries
+/// only MCP lines, so a failure is reported on standard error only.
+fn mcp_relay(address: &std::ffi::OsStr) -> Result<(), CliError> {
+    let nonce = std::env::var(RELAY_NONCE_VARIABLE).unwrap_or_default();
+    relay(address, &nonce, io::stdin(), io::stdout().lock())
+        .map_err(|_| CliError::new("relay", "The MCP relay channel failed"))
+}
+
+/// This executable, which a Claude Code connection runs as its MCP relay.
+/// On Windows its folder is the relay folder `workspace claude-code-grant`
+/// grants the connection's container.
+pub(crate) fn relay_program() -> Result<PathBuf, CliError> {
+    std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|_| CliError::new("configuration", "The OMGCode executable could not be found"))
 }
 
 /// Validate the provider before opening storage, then attach recovery information.
@@ -527,7 +565,7 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
     // profile with no endpoint stops the command before the endpoint is
     // checked and before any journal exists. With a profile, its recorded
     // endpoint is the only endpoint used.
-    let connection = local_connection(
+    let (connection, claude_code) = chat_connection(
         data_dir.as_deref(),
         args.endpoint,
         args.provider_profile.as_deref(),
@@ -546,7 +584,10 @@ fn chat(data_dir: Option<PathBuf>, mut args: ChatArgs) -> Result<(), CliError> {
         auto_compact: args.auto_compact,
         reasoning_effort: args.reasoning_effort,
     };
-    let clients = ChatClients::for_connection(&settings, &connection)?;
+    let clients = match claude_code {
+        Some(paths) => ChatClients::claude_code(&settings, paths)?,
+        None => ChatClients::for_connection(&settings, &connection)?,
+    };
     let title = redact_known_secret(&args.title, token_text);
     let path = if args.journal.is_some() || args.journal_native.is_some() {
         Some(resolve_journal(
@@ -621,23 +662,45 @@ fn compact_session(
             "summary-tokens must be positive and below context-tokens",
         ));
     }
-    let LocalConnection {
-        endpoint,
-        token,
-        plan,
-    } = local_connection(data_dir.as_deref(), endpoint, provider_profile.as_deref())?;
+    let (
+        LocalConnection {
+            endpoint,
+            token,
+            plan,
+        },
+        claude_code,
+    ) = chat_connection(data_dir.as_deref(), endpoint, provider_profile.as_deref())?;
     let token_text = token.as_ref().map(LmToken::expose);
-    let config = LocalModelConfig {
-        base_url: endpoint,
-        model,
-        context_tokens,
-        max_output_tokens: summary_tokens,
+    let client: ModelClient = match claude_code {
+        Some(paths) => ClaudeCodeClient::new(ClaudeCodeConfig {
+            program: paths.program,
+            config_folder: paths.config_folder,
+            runtime_folder: paths.runtime_folder,
+            relay_program: paths.relay_program,
+            container: paths.container,
+            model,
+            effort: None,
+            max_output_tokens: summary_tokens,
+            request_timeout: COMPACTION_REQUEST_TIMEOUT,
+            watch: paths.watch,
+        })
+        .map_err(provider_error)?
+        .into(),
+        None => {
+            let config = LocalModelConfig {
+                base_url: endpoint,
+                model,
+                context_tokens,
+                max_output_tokens: summary_tokens,
+            };
+            match &plan {
+                Some(plan) => LocalModelClient::chatgpt(config, plan.tokens()),
+                None => LocalModelClient::new(config, token_text.map(str::to_owned)),
+            }
+            .map_err(provider_error)?
+            .into()
+        }
     };
-    let client = match &plan {
-        Some(plan) => LocalModelClient::chatgpt(config, plan.tokens()),
-        None => LocalModelClient::new(config, token_text.map(str::to_owned)),
-    }
-    .map_err(provider_error)?;
     let data_root = data_root(data_dir)?;
     let path = resolve_journal(locator.journal, locator.journal_native)?;
     let mut journal = SessionJournal::open(&path).map_err(session_error)?;
@@ -694,6 +757,35 @@ fn stop_interrupts(interrupts: InterruptWatch) {
     // the watcher thread, which cannot change the outcome that was already
     // recorded, so it is not reported over the command's result.
     let _ = interrupts.stop();
+}
+
+/// How long one Claude Code summary request of `session compact` may take.
+const COMPACTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The connection for `chat` or `session compact`. A profile that names a
+/// Claude Code connection resolves to its checked paths and the endpoint
+/// label `claude-code:NAME`, with no token (ADR-0109); every other source is
+/// [`local_connection`].
+fn chat_connection(
+    data_dir: Option<&Path>,
+    endpoint: String,
+    provider_profile: Option<&str>,
+) -> Result<(LocalConnection, Option<ClaudeCodePaths>), CliError> {
+    if let Some(name) = provider_profile {
+        let root = data_root(data_dir.map(Path::to_path_buf))?;
+        if let Some(paths) = resolve_claude_code(&root, name, &relay_program()?)? {
+            let connection = LocalConnection {
+                endpoint: format!("{CLAUDE_CODE_ENDPOINT_PREFIX}{name}"),
+                token: None,
+                plan: None,
+            };
+            return Ok((connection, Some(paths)));
+        }
+    }
+    Ok((
+        local_connection(data_dir, endpoint, provider_profile)?,
+        None,
+    ))
 }
 
 /// Obtain the endpoint and server token for `chat` or `session compact`.

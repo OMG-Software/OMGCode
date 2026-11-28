@@ -361,6 +361,18 @@ journal that records an endpoint cannot be read by 0.30.0. The
 [provider authentication guide](provider-authentication.md#endpoint-binding-0310)
 owns the rules.
 
+A `claude_code` profile (0.72.0,
+[ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md))
+is recorded with `workspace claude-code-add` instead, which `provider-profile-add`
+refuses. Its `provider_profile_added` event carries a `claude_code` field with
+the program and the identities of its folder and of the sign-in folder, and no
+endpoint or credential. The connection's container grants are recorded as
+`claude_code_grant_requested`, `claude_code_grant_applied`,
+`claude_code_revoke_requested`, and `claude_code_grant_revoked`, with the same
+grant reserve as workspace grants, and replay refuses a profile removal while
+any of its grants remains. A control journal that records one cannot be read
+by 0.71.0. The profile grants no workspace permission.
+
 Since 0.44.0, `provider-profile-select <name> --revision <n>` records
 `active_provider_selected` with the profile's identifier, and `--default`
 records it without one. Only an `lm_studio` or `ollama_local` profile with an
@@ -438,7 +450,7 @@ keep their bytes; a build before 0.64.0 refuses a settings log that holds
 another state.
 
 Each workspace also has a host allowlist of at most 100 patterns (32 before
-0.72.0, ADR-0110; an older build refuses a settings log with more).
+0.73.0, ADR-0110; an older build refuses a settings log with more).
 `workspace web-host-add <id> <pattern> --revision <n>` adds one,
 `workspace web-host-remove <id> <pattern> --revision <n>` removes one, and
 `workspace web-host-list <id>` prints the preference and the list. A pattern
@@ -464,7 +476,7 @@ and shows the URL, its host, and whether the host is allowlisted now. The
 policy, and [ADR-0098](adr/0098-add-a-model-web-fetch-tool-behind-a-host-allowlist.md)
 records the design.
 
-Since 0.72.0 the desktop approvals window can also decide a pending fetch with
+Since 0.73.0 the desktop approvals window can also decide a pending fetch with
 **Allow host** (ADR-0110). It is offered only while `web_fetch` is `allow`, the
 host is not listed, and the list has room. After a native confirmation that
 names the host and the workspace folder, core approves the record and then

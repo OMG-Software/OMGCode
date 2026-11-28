@@ -28,6 +28,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::claude_code::{self, ClaudeCodeSetup};
 use super::credential::{self, CredentialBinding, ProviderProfileRemoval};
 use super::{Action, ControlError, ControlSnapshot, ControlStore, valid_profile_name, valid_uuid};
 use crate::provider::{
@@ -99,14 +100,20 @@ pub enum ProviderKind {
     /// the operator types when adding the profile.
     #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
+    /// The operator's own signed-in Claude Code CLI, driven as a confined
+    /// child process (ADR-0109). It records a program and sign-in folder,
+    /// never an endpoint or a credential.
+    #[serde(rename = "claude_code")]
+    ClaudeCode,
 }
 
 impl ProviderKind {
     /// Every kind: the local kinds, then the named hosted providers, then
-    /// `openai_compatible`. The CLI reports kinds in this order; the desktop
-    /// dropdown keeps its own order (`NEW_CONNECTION_KINDS` in the UI's
-    /// `providers.ts`), which lists Ollama before LM Studio.
-    pub const ALL: [Self; 16] = [
+    /// `openai_compatible`, then `claude_code`. The CLI reports kinds in this
+    /// order; the desktop dropdown keeps its own order (`NEW_CONNECTION_KINDS`
+    /// in the UI's `providers.ts`), which lists Ollama before LM Studio and
+    /// offers no `claude_code` connection yet.
+    pub const ALL: [Self; 17] = [
         Self::LmStudio,
         Self::OllamaLocal,
         Self::OllamaCloud,
@@ -123,6 +130,7 @@ impl ProviderKind {
         Self::DeepSeek,
         Self::XAi,
         Self::OpenAiCompatible,
+        Self::ClaudeCode,
     ];
 
     /// The stored spelling.
@@ -144,6 +152,7 @@ impl ProviderKind {
             Self::DeepSeek => "deepseek",
             Self::XAi => "xai",
             Self::OpenAiCompatible => "openai_compatible",
+            Self::ClaudeCode => "claude_code",
         }
     }
 
@@ -156,14 +165,20 @@ impl ProviderKind {
     /// Whether this kind is a hosted service: every request leaves this
     /// computer over HTTPS and carries a stored API key (ADR-0071, ADR-0092).
     pub const fn is_hosted(self) -> bool {
-        !self.is_local()
+        !self.is_local() && !self.runs_program()
+    }
+
+    /// Whether this kind drives a program on this computer rather than
+    /// sending requests itself: `claude_code` (ADR-0109).
+    pub const fn runs_program(self) -> bool {
+        matches!(self, Self::ClaudeCode)
     }
 
     /// The one endpoint a named hosted kind accepts, or `None` for a local
     /// kind or `openai_compatible`, whose endpoint the operator supplies.
     pub const fn fixed_endpoint(self) -> Option<&'static str> {
         match self {
-            Self::LmStudio | Self::OllamaLocal | Self::OpenAiCompatible => None,
+            Self::LmStudio | Self::OllamaLocal | Self::OpenAiCompatible | Self::ClaudeCode => None,
             Self::OllamaCloud => Some(OLLAMA_CLOUD_ENDPOINT),
             Self::Anthropic => Some(ANTHROPIC_ENDPOINT),
             Self::OpenAi => Some(OPENAI_ENDPOINT),
@@ -232,9 +247,30 @@ pub struct ProviderProfile {
     /// had before endpoints existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) endpoint: Option<ProviderEndpoint>,
+    /// The program and sign-in folder of a `claude_code` profile, and only
+    /// of one (ADR-0109). Written only when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) claude_code: Option<ClaudeCodeSetup>,
 }
 
 impl ProviderProfile {
+    /// A new `claude_code` profile, before validation.
+    pub(super) const fn claude_code(id: Uuid, name: String, setup: ClaudeCodeSetup) -> Self {
+        Self {
+            id,
+            name,
+            kind: ProviderKind::ClaudeCode,
+            auth: ProviderAuth::Subscription,
+            endpoint: None,
+            claude_code: Some(setup),
+        }
+    }
+
+    /// The program and sign-in folder of a `claude_code` profile.
+    pub const fn claude_code_setup(&self) -> Option<&ClaudeCodeSetup> {
+        self.claude_code.as_ref()
+    }
+
     /// The recorded endpoint, if any. It never changes for this profile.
     pub const fn endpoint(&self) -> Option<&ProviderEndpoint> {
         self.endpoint.as_ref()
@@ -384,6 +420,11 @@ impl ControlStore {
         }
         let kind = ProviderKind::parse(&declaration.kind)
             .ok_or(ControlError::ProviderRefused("unknown provider kind"))?;
+        if kind.runs_program() {
+            return Err(ControlError::ProviderRefused(
+                "a claude_code connection records a program and sign-in folder; add it with `workspace claude-code-add`",
+            ));
+        }
         let auth = ProviderAuth::parse(&declaration.auth).ok_or(ControlError::ProviderRefused(
             "authentication must be subscription, api_key, or none",
         ))?;
@@ -407,6 +448,7 @@ impl ControlStore {
             kind,
             auth,
             endpoint: endpoint.map(ProviderEndpoint),
+            claude_code: None,
         };
         validate_profile(&profile)?;
         Ok(profile)
@@ -510,6 +552,11 @@ impl ControlStore {
                 "this profile is signed in with ChatGPT; sign out first",
             ));
         }
+        if claude_code::has_grants(&self.snapshot, profile_id) {
+            return Err(ControlError::ProviderRefused(
+                "this Claude Code connection's container still holds grants; revoke them first",
+            ));
+        }
         self.append(
             Action::ProviderProfileRemoved {
                 profile_id,
@@ -562,6 +609,11 @@ pub(super) fn apply(
                 .ok_or(ControlError::Invalid(
                     "removal of an unknown provider profile",
                 ))?;
+            if claude_code::has_grants(state, *profile_id) {
+                return Err(ControlError::Invalid(
+                    "removal of a provider profile whose container holds grants",
+                ));
+            }
             // A bound credential must be named by the removal itself, so the
             // journal always shows which native item became unbound.
             let bound = state
@@ -612,8 +664,9 @@ const fn selectable(profile: &ProviderProfile) -> bool {
     profile.endpoint.is_some()
 }
 
-/// Check a profile name and the provider/authentication pairing.
-fn validate_profile(profile: &ProviderProfile) -> Result<(), ControlError> {
+/// Check a profile name, the provider/authentication pairing, and that only a
+/// `claude_code` profile records a program setup.
+pub(super) fn validate_profile(profile: &ProviderProfile) -> Result<(), ControlError> {
     if !valid_uuid(profile.id) || !valid_profile_name(&profile.name) {
         return Err(ControlError::ProviderRefused(
             "provider profile names are 1 to 64 ASCII letters, digits, '.', '-', or '_', starting with a letter or digit",
@@ -622,6 +675,11 @@ fn validate_profile(profile: &ProviderProfile) -> Result<(), ControlError> {
     if !auth_allowed(profile.kind, profile.auth) {
         return Err(ControlError::ProviderRefused(
             "this provider does not support the selected authentication mode",
+        ));
+    }
+    if !claude_code::valid_profile_shape(profile) {
+        return Err(ControlError::ProviderRefused(
+            "a claude_code profile records a program and sign-in folder and no endpoint, and no other profile records them",
         ));
     }
     if let Some(endpoint) = &profile.endpoint {
@@ -662,8 +720,11 @@ fn validate_endpoint(kind: ProviderKind, text: &str) -> Result<(), ControlError>
 /// profile signs in with ChatGPT (ADR-0093). An Anthropic `subscription`
 /// profile stays recordable so journals written by 0.58.0 and earlier
 /// replay, but no adapter uses it; every other hosted kind is `api_key` only.
+/// A `claude_code` profile is `subscription` only: the operator signs the CLI
+/// in, and OMGCode holds no credential for it (ADR-0109).
 fn auth_allowed(kind: ProviderKind, auth: ProviderAuth) -> bool {
     match kind {
+        ProviderKind::ClaudeCode => auth == ProviderAuth::Subscription,
         ProviderKind::OpenAi | ProviderKind::Anthropic => {
             matches!(auth, ProviderAuth::Subscription | ProviderAuth::ApiKey)
         }

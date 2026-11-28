@@ -103,9 +103,9 @@ jobs:
         run: rustup toolchain install 1.99.1 --profile minimal
       - name: Install the desktop shell's Linux build packages
         run: |
-          # The Tauri prerequisites for Debian and Ubuntu, as in rust.yml.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # The Tauri prerequisites for Debian and Ubuntu, as in rust.yml,
+          # from the Ubuntu archive's sources only.
+          bash .github/scripts/apt-install-ubuntu.sh \
             libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
             libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

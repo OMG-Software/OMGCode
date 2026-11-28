@@ -844,9 +844,10 @@ fn an_ollama_cloud_profile_is_selectable_and_replays_without_a_credential_check(
     );
 }
 
-/// Every kind except the two local ones is hosted, and every hosted kind but
-/// `openai_compatible` has one fixed HTTPS endpoint (ADR-0092). Each spelling
-/// round-trips through `parse`.
+/// Every kind except the two local ones and `claude_code` is hosted, and
+/// every hosted kind but `openai_compatible` has one fixed HTTPS endpoint
+/// (ADR-0092). `claude_code` drives a program and has no endpoint (ADR-0109).
+/// Each spelling round-trips through `parse`.
 #[test]
 fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
     use crate::provider::OutputLimitField;
@@ -869,18 +870,24 @@ fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
             | ProviderKind::OpenRouter
             | ProviderKind::ZAi
             | ProviderKind::DeepSeek
-            | ProviderKind::OpenAiCompatible => OutputLimitField::MaxTokens,
+            | ProviderKind::OpenAiCompatible
+            | ProviderKind::ClaudeCode => OutputLimitField::MaxTokens,
         }
     }
 
-    assert_eq!(ProviderKind::ALL.len(), 16);
+    assert_eq!(ProviderKind::ALL.len(), 17);
     for kind in ProviderKind::ALL {
         assert_eq!(ProviderKind::parse(kind.as_str()), Some(kind));
         assert_eq!(
             ProviderKind::parse(&kind.as_str().to_ascii_uppercase()),
             Some(kind)
         );
-        assert_eq!(kind.is_hosted(), !kind.is_local(), "{kind:?}");
+        assert_eq!(
+            kind.is_hosted(),
+            !kind.is_local() && !kind.runs_program(),
+            "{kind:?}"
+        );
+        assert_eq!(kind.runs_program(), kind == ProviderKind::ClaudeCode);
         match kind.fixed_endpoint() {
             Some(endpoint) => {
                 assert!(kind.is_hosted(), "{kind:?}");
@@ -898,7 +905,7 @@ fn every_hosted_kind_but_openai_compatible_has_one_fixed_https_endpoint() {
                 );
             }
             None => assert!(
-                kind.is_local() || kind == ProviderKind::OpenAiCompatible,
+                kind.is_local() || kind.runs_program() || kind == ProviderKind::OpenAiCompatible,
                 "{kind:?}"
             ),
         }

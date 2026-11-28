@@ -26,7 +26,8 @@ directory grants.
 > create new files/directories through the trusted CLI, preview bounded diffs
 > against trusted proposed content, and send a chat request to
 > an explicitly selected model connection: a local LM Studio or Ollama server, a
-> hosted provider with a stored API key, or a ChatGPT sign-in. `omgcode chat --stream` streams
+> hosted provider with a stored API key, a ChatGPT sign-in, or, from the CLI, the
+> operator's own signed-in Claude Code CLI (ADR-0109). `omgcode chat --stream` streams
 > that model's reply to standard error as provisional text.
 > When a workspace enables the `model_tools` preference, chat lets the
 > model read and list files inside that workspace through a bounded runtime.
@@ -276,7 +277,10 @@ data upstream; check the server's configuration before sending sensitive text.
 - **Subscription authentication:** Required ChatGPT and Claude subscription
   connections, alongside separate API-key connections. A ChatGPT sign-in
   prototype exists (ADR-0093) but plan usage has not been verified with a real
-  account; Claude subscription sign-in still needs provider approval.
+  account; Claude subscription sign-in still needs provider approval. A
+  `claude_code` connection drives the operator's own signed-in `claude` CLI
+  from the trusted CLI in its own sandbox, without handling the Claude
+  credential (ADR-0109); it is personal use, not evidence of approval.
 - **Development tools:** Compilers, linkers, SDKs, formatters, linters, script
   interpreters, build systems, package managers, and test tools.
 - **Permission settings:** Toggle switches for file access, command execution,
@@ -330,7 +334,7 @@ data upstream; check the server's configuration before sending sensitive text.
 | OpenAI API | Prototype: Chat Completions at `https://api.openai.com/v1` with a stored API key (ADR-0092); not tested with a real key |
 | ChatGPT subscription | Prototype: Sign in with ChatGPT through OpenAI's documented browser flow and plan usage through the Responses API (ADR-0093); tested against mock servers, and one real sign-in, model list, and text turn were observed (ADR-0096), and two read and list tool turns finished after tool results were sent as call and output items (ADR-0097) |
 | Anthropic API | Prototype: Anthropic's OpenAI SDK compatibility layer with a stored API key (ADR-0092), documented by Anthropic for testing; the native Messages API is planned; not tested with a real key |
-| Claude subscription | Required; provider approval and route remain unresolved |
+| Claude subscription | Required; provider approval and route remain unresolved. A `claude_code` connection drives the operator's own signed-in `claude` CLI from the trusted CLI as personal use (ADR-0109); it was tested with a fake `claude` only |
 | Ollama Local | Prototype: Ollama's OpenAI-compatible `/v1` API over literal loopback HTTP (ADR-0064) |
 | Ollama Cloud | Prototype: the fixed endpoint `https://ollama.com/v1` with a stored API key (ADR-0071); chat not tested with a real key |
 | OpenRouter | Prototype: `https://openrouter.ai/api/v1` with a stored API key (ADR-0092); upstream routing controls are planned; not tested with a real key |

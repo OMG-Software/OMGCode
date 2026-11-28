@@ -123,4 +123,5 @@ meaningful alternative does not need an ADR.
 | [0106: Name the ungranted run path by its role](0106-name-the-ungranted-run-path-by-its-role.md) | Accepted | 2026-11-26 |
 | [0107: Assign toolchain profiles to workspaces and grant on assignment](0107-assign-toolchain-profiles-to-workspaces-and-grant-on-assignment.md) | Accepted | 2026-11-27 |
 | [0108: Report a refused reasoning effort by name](0108-report-a-refused-reasoning-effort-by-name.md) | Accepted | 2026-11-27 |
+| [0109: Drive the signed-in Claude Code CLI as a model connection](0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md) | Accepted | 2026-11-28 |
 | [0110: Allow a web host from a fetch approval and list 100 hosts](0110-allow-a-web-host-from-a-fetch-approval-and-list-100-hosts.md) | Accepted | 2026-11-28 |

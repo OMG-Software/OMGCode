@@ -24,6 +24,7 @@ use crate::workspace::DirectoryRecord;
 
 mod approval;
 mod assignment;
+mod claude_code;
 mod container;
 mod credential;
 mod package;
@@ -44,6 +45,13 @@ pub use assignment::{
     AssignmentFailure, FolderGrant, PlannedFolder, ProfileAccessPlan, ProfileAssignment,
     RegisteredWorkspace, Revocations, SkippedGrant, Unregistration,
 };
+pub use claude_code::{
+    CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole,
+    ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeRevokeFailure,
+    ClaudeCodeSetup, ClaudeCodeWatch, MAX_TURN_RECORDS, acknowledge_claude_code_cleanup,
+    claude_code_container, claude_code_runtime_folder, wait_for_claude_code_turns,
+};
+pub(crate) use claude_code::{Recheck, TurnRecord, WatchCursor};
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
     ContainerRevocation, RootGrantNeed, container_name, root_grant_need,
@@ -192,6 +200,55 @@ pub enum ControlError {
     /// The approval request, decision, or consumption is not valid.
     #[error("approval refused: {0}")]
     ApprovalRefused(&'static str),
+    /// A change that withdrew a Claude Code connection is recorded, but a
+    /// running turn of the connection did not end within the wait.
+    #[error(
+        "the change is recorded, but a running Claude Code turn of this connection did not end within {} seconds; end that `omgcode` command, then check that no `claude` process of the connection remains, including its MCP relays and their descendants",
+        CLAUDE_CODE_TURN_STOP_WAIT.as_secs()
+    )]
+    ClaudeCodeTurnsRunning,
+    /// A turn of the Claude Code connection with this profile identifier
+    /// left its record: its process tree was not observed ended, or the
+    /// OMGCode process that ran it ended first, so its processes may remain.
+    /// Every wait for the connection's turns fails until the operator
+    /// acknowledges it.
+    #[error(
+        "the change is recorded, but a Claude Code turn of this connection was not observed to end with its whole process tree; check that no `claude` process of the connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
+    )]
+    ClaudeCodeCleanupUnconfirmed(uuid::Uuid),
+    /// An acknowledgement found a running turn of the Claude Code connection
+    /// holding its turn lock; nothing was changed.
+    #[error(
+        "a turn of this Claude Code connection holds its turn lock, so nothing was acknowledged; the lock is released when that turn ends or, for a turn whose end was not confirmed, when the `omgcode` process running it exits"
+    )]
+    ClaudeCodeTurnLockHeld,
+    /// A turn record of the Claude Code connection with this profile
+    /// identifier cannot be read, so the sign-in folder it reserves is
+    /// unknown.
+    #[error(
+        "a turn record of the Claude Code connection {0} cannot be read, so the sign-in folder it reserves is unknown; check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
+    )]
+    ClaudeCodeTurnRecordUnreadable(uuid::Uuid),
+    /// A removed Claude Code connection's turn whose end was not confirmed
+    /// reserves an overlapping sign-in folder, or one that moved since.
+    #[error(
+        "the folder overlaps the sign-in folder of the removed Claude Code connection {0}, whose turn was not observed to end, or that folder moved since the turn started; check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
+    )]
+    ClaudeCodeSignInReserved(uuid::Uuid),
+    /// A turn of the Claude Code connection with this profile identifier,
+    /// running or not observed to end, can read an overlapping folder
+    /// through its program or relay folder, or that folder moved since.
+    #[error(
+        "the folder overlaps the program or relay folder of a turn of the Claude Code connection {0}, which is running or was not observed to end, or that folder moved since the turn started; wait for the turn to end, or check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
+    )]
+    ClaudeCodeScopeReserved(uuid::Uuid),
+    /// The Claude Code turn records are full: no turn can record another,
+    /// and beyond them no sign-in folder can be proven free of them.
+    #[error(
+        "the Claude Code turn records are full ({} kept across every connection), so no turn can start, and beyond that many no sign-in folder can be proven free of them; for each connection, check that no `claude` process of it remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge <profile id>`; keep a connection's records while that cannot be confirmed",
+        claude_code::MAX_TURN_RECORDS
+    )]
+    ClaudeCodeTurnRecordsFull,
 }
 
 impl From<StorageError> for ControlError {
@@ -279,6 +336,10 @@ pub struct ControlSnapshot {
     configuration_only: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     container_grants: Vec<ContainerGrantStatus>,
+    /// Grants to Claude Code connection containers (ADR-0109), apart from
+    /// workspace grants because they belong to a provider profile.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    claude_code_grants: Vec<ClaudeCodeGrantStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     profiles: Vec<ProfileStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -457,6 +518,20 @@ enum Action {
         grant_id: Uuid,
     },
     ContainerGrantRevoked {
+        grant_id: Uuid,
+    },
+    /// The intent to grant a Claude Code connection's container one folder
+    /// (ADR-0109), synced before the ACL change.
+    ClaudeCodeGrantRequested {
+        grant: ClaudeCodeGrant,
+    },
+    ClaudeCodeGrantApplied {
+        grant_id: Uuid,
+    },
+    ClaudeCodeRevokeRequested {
+        grant_id: Uuid,
+    },
+    ClaudeCodeGrantRevoked {
         grant_id: Uuid,
     },
     ProfileAdded {
@@ -872,6 +947,7 @@ impl ControlStore {
                 workspaces: Vec::new(),
                 configuration_only: true,
                 container_grants: Vec::new(),
+                claude_code_grants: Vec::new(),
                 profiles: Vec::new(),
                 package_profiles: Vec::new(),
                 package_cache_roots: Vec::new(),
@@ -1160,6 +1236,11 @@ impl ControlStore {
         self.check_storage_overlap(&directory)?;
         if self.snapshot.development_root.as_ref() == Some(&directory) {
             return Ok(());
+        }
+        if self.overlaps_claude_code_sign_in(&directory, None)? {
+            return Err(ControlError::GrantRefused(
+                "the development root must not overlap a Claude Code sign-in folder; remove that connection with `workspace provider-profile-remove` first",
+            ));
         }
         self.append(Action::RootSet { directory }, self.next_revision()?)
     }
@@ -1588,6 +1669,9 @@ impl ControlStore {
                 | Action::ContainerGrantApplied { .. }
                 | Action::ContainerRevokeRequested { .. }
                 | Action::ContainerGrantRevoked { .. }
+                | Action::ClaudeCodeGrantApplied { .. }
+                | Action::ClaudeCodeRevokeRequested { .. }
+                | Action::ClaudeCodeGrantRevoked { .. }
                 | Action::PackageFetchStarted { .. }
                 | Action::PackageFetchFinished { .. }
                 | Action::ApprovalRequested { .. }
@@ -1710,6 +1794,10 @@ impl ControlStore {
             | Action::ContainerGrantApplied { .. }
             | Action::ContainerRevokeRequested { .. }
             | Action::ContainerGrantRevoked { .. } => container::apply(state, &entry.action)?,
+            Action::ClaudeCodeGrantRequested { .. }
+            | Action::ClaudeCodeGrantApplied { .. }
+            | Action::ClaudeCodeRevokeRequested { .. }
+            | Action::ClaudeCodeGrantRevoked { .. } => claude_code::apply(state, &entry.action)?,
             Action::ProfileAdded { .. } | Action::ProfileRemoved { .. } => {
                 profile::apply(state, &entry.action, revision)?;
             }

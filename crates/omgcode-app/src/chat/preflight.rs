@@ -6,13 +6,14 @@ use omgcode_core::context::{
     ContextBudget, MESSAGE_OVERHEAD, estimate_history_input_tokens, estimate_history_parts,
 };
 use omgcode_core::prompt::{self, BASE_PROMPT, ConversationMessage, ConversationRole, PromptError};
-use omgcode_core::provider::{LocalModelClient, ReasoningEffort, effort_field_bytes};
+use omgcode_core::provider::{ReasoningEffort, effort_field_bytes};
 use omgcode_core::session::SessionJournal;
 use omgcode_core::turn::replay_active;
 
 use super::Turn;
 use crate::context::{ContextMeter, compact_journal, summary_output_tokens};
 use crate::error::{AppError, ErrorKind};
+use crate::model_client::ModelClient;
 use crate::tool_mode::{TOOL_SCHEMA_ESTIMATE_BYTES, tool_replay_allowed};
 
 /// Apply the context trigger before a turn and return the visible meter.
@@ -26,7 +27,7 @@ use crate::tool_mode::{TOOL_SCHEMA_ESTIMATE_BYTES, tool_replay_allowed};
 pub(super) fn preflight_context(
     journal: &mut SessionJournal,
     turn: &Turn<'_>,
-    summary_client: &LocalModelClient,
+    summary_client: &ModelClient,
     fixed_extra_bytes: usize,
     tools_enabled: bool,
 ) -> Result<ContextMeter, AppError> {

@@ -9,7 +9,11 @@ import type {
 } from "../src/ipc/types";
 import { NOTHING_CHANGED, type SettingsApp, startSettings } from "../src/settings/app";
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
-import { NO_ENDPOINT_NOTE, UNSUPPORTED_AUTH_NOTE } from "../src/settings/model_section";
+import {
+  NO_ENDPOINT_NOTE,
+  PROGRAM_CONNECTION_NOTE,
+  UNSUPPORTED_AUTH_NOTE,
+} from "../src/settings/model_section";
 import {
   ADD_HOST_LABEL,
   HOST_INPUT_LABEL,
@@ -756,6 +760,46 @@ describe("advanced section", () => {
     expect(row?.textContent).not.toContain("the address you enter");
     expect(row?.textContent).not.toContain("Set key");
     expect(row?.querySelector("input[type=password]")).toBeNull();
+  });
+
+  it("names a Claude Code connection as CLI only, offers no key, and can remove it", async () => {
+    await start(() =>
+      overview({
+        provider_profiles: [
+          profile({
+            name: "claude",
+            kind: "claude_code",
+            auth: "subscription",
+            endpoint: null,
+            credential_bound: false,
+            selectable: false,
+          }),
+        ],
+      }),
+    );
+    go("Model");
+    const row = Array.from(root.querySelectorAll<HTMLElement>(".row")).find(
+      (candidate) => candidate.querySelector(".row-title")?.textContent === "claude",
+    );
+    expect(row?.textContent).toContain("Claude Code");
+    expect(row?.textContent).toContain("CLI only");
+    expect(row?.textContent).toContain(PROGRAM_CONNECTION_NOTE);
+    expect(row?.textContent).toContain("the program keeps its own sign-in");
+    // OMGCode sends nothing itself, so it is not called hosted or told to take an API key.
+    expect(row?.textContent).not.toContain("Hosted");
+    expect(row?.textContent).not.toContain(UNSUPPORTED_AUTH_NOTE);
+    expect(row?.textContent).not.toContain("Set key");
+    expect(row?.querySelector("input")).toBeNull();
+    const remove = Array.from(row?.querySelectorAll("button") ?? []).find(
+      (candidate) => candidate.textContent === "Remove",
+    );
+    expect(remove).toBeDefined();
+    // The add dropdown never offers the kind: only the trusted CLI records one.
+    const kinds = Array.from(
+      root.querySelectorAll<HTMLOptionElement>("#new-connection-provider option"),
+    ).map((option) => option.value);
+    expect(kinds.length).toBeGreaterThan(0);
+    expect(kinds).not.toContain("claude_code");
   });
 
   it("gives each empty group one line", async () => {

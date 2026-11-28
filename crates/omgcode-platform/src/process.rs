@@ -4,6 +4,8 @@
 //! its whole descendant tree: bounded output, a deadline, cooperative
 //! cancellation, observed tree cleanup, and tree-wide memory, process, CPU-time,
 //! and disk limits. [`run`] applies no filesystem or network confinement.
+//! [`spawn_confined_streaming`] is [`run_confined`] for a long-lived helper
+//! whose standard input and output stay live pipes owned by the caller.
 //! [`run_confined`] adds a Landlock filesystem allowlist and a seccomp socket
 //! filter on Linux, and an AppContainer with recorded directory grants on
 //! Windows. The disk limit samples the bytes allocated under the writable
@@ -25,6 +27,7 @@ mod confinement;
 mod disk;
 #[cfg(target_os = "linux")]
 mod linux;
+mod streaming;
 #[cfg(windows)]
 mod windows;
 
@@ -39,6 +42,7 @@ pub use confinement::{
     AppliedConfinement, Confinement, ConfinementEntry, MAX_CONFINEMENT_PATHS, NetworkAccess,
     UngrantedPath, UnixSocketAccess,
 };
+pub use streaming::{ChildInput, ChildOutput, StreamingChild, StreamingOutcome, TreeEnd};
 
 /// Largest accepted run deadline.
 pub const MAX_DEADLINE: Duration = Duration::from_secs(60 * 60);
@@ -67,6 +71,13 @@ pub const MAX_TREE_DISK_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 
 /// Poll interval for exit, deadline, and cancellation checks.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Longest a streaming run's final disk accounting may take after its tree is
+/// empty: one in-flight sample that the sampler's stop waits for, then the
+/// final measurement, each limited to the disk scan's 30 second bound.
+const DISK_ACCOUNTING_BOUND: Duration = Duration::from_secs(60);
+/// Extra time [`StreamingChild`] allows its supervisor to settle beyond two
+/// cleanup timeouts, one for the tree and one for the standard-error reader.
+const SUPERVISOR_SLACK: Duration = Duration::from_secs(1);
 /// Read buffer for one captured stream.
 const READ_CHUNK: usize = 8 * 1024;
 
@@ -201,6 +212,16 @@ impl ProcessLimits {
     ///
     /// Returns [`ProcessError::InvalidLimits`] for a value out of range.
     pub fn validate(self) -> Result<Self, ProcessError> {
+        self.validate_captures(true)
+    }
+
+    /// The check [`spawn_confined_streaming`] makes: it retains no standard
+    /// output, so `max_stdout_bytes` is not range-checked.
+    fn validate_streaming(self) -> Result<Self, ProcessError> {
+        self.validate_captures(false)
+    }
+
+    fn validate_captures(self, check_stdout: bool) -> Result<Self, ProcessError> {
         if self.deadline.is_zero() || self.deadline > MAX_DEADLINE {
             return Err(ProcessError::InvalidLimits("deadline is out of range"));
         }
@@ -209,7 +230,9 @@ impl ProcessLimits {
                 "cleanup timeout is out of range",
             ));
         }
-        if self.max_stdout_bytes > MAX_CAPTURE_BYTES || self.max_stderr_bytes > MAX_CAPTURE_BYTES {
+        if (check_stdout && self.max_stdout_bytes > MAX_CAPTURE_BYTES)
+            || self.max_stderr_bytes > MAX_CAPTURE_BYTES
+        {
             return Err(ProcessError::InvalidLimits(
                 "output capture limit is too large",
             ));
@@ -311,11 +334,51 @@ pub enum ProcessError {
     /// observed it empty before returning this error.
     Supervision(io::Error),
     /// The runner could not observe the tree empty, or its output closed,
-    /// within the cleanup timeout. Processes may remain.
-    CleanupUnconfirmed(&'static str),
+    /// within the cleanup timeout, or it failed to terminate or check the tree
+    /// before it saw it empty. Processes may remain.
+    CleanupUnconfirmed(UnconfirmedCleanup),
     /// A disk limit could not be prepared or its sampler could not start.
     /// Nothing was started.
     DiskMeasurement(io::Error),
+}
+
+/// Why a tree was not observed empty: a fixed reason and, when a native call
+/// failed before the tree was seen empty, that call's error.
+#[derive(Debug)]
+pub struct UnconfirmedCleanup {
+    reason: &'static str,
+    cause: Option<io::Error>,
+}
+
+impl UnconfirmedCleanup {
+    /// A report that a tree was not observed empty, for `reason`, with no
+    /// failed native call. It is only a report: callers that drive a tree
+    /// through another layer use it to exercise their handling of this
+    /// outcome.
+    #[must_use]
+    pub fn new(reason: &'static str) -> Self {
+        Self {
+            reason,
+            cause: None,
+        }
+    }
+
+    fn caused_by(reason: &'static str, cause: io::Error) -> Self {
+        Self {
+            reason,
+            cause: Some(cause),
+        }
+    }
+
+    /// The fixed reason cleanup was not confirmed.
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// The native failure behind the reason, when there was one.
+    pub fn cause(&self) -> Option<&io::Error> {
+        self.cause.as_ref()
+    }
 }
 
 impl fmt::Display for ProcessError {
@@ -345,11 +408,16 @@ impl fmt::Display for ProcessError {
             }
             Self::Spawn(error) => write!(formatter, "the program could not be started: {error}"),
             Self::Supervision(error) => write!(formatter, "process supervision failed: {error}"),
-            Self::CleanupUnconfirmed(reason) => {
+            Self::CleanupUnconfirmed(cleanup) => {
                 write!(
                     formatter,
-                    "process tree cleanup was not confirmed: {reason}"
-                )
+                    "process tree cleanup was not confirmed: {}",
+                    cleanup.reason
+                )?;
+                match &cleanup.cause {
+                    Some(cause) => write!(formatter, ": {cause}"),
+                    None => Ok(()),
+                }
             }
             Self::DiskMeasurement(error) => {
                 write!(formatter, "the disk limit could not be applied: {error}")
@@ -365,6 +433,10 @@ impl std::error::Error for ProcessError {
             | Self::Supervision(error)
             | Self::Confinement(error)
             | Self::DiskMeasurement(error) => Some(error),
+            Self::CleanupUnconfirmed(cleanup) => cleanup
+                .cause
+                .as_ref()
+                .map(|cause| cause as &(dyn std::error::Error + 'static)),
             _ => None,
         }
     }
@@ -403,10 +475,11 @@ pub fn run(
 /// connecting to host Unix-domain sockets. Setup fails closed: if a rule or primitive cannot be applied,
 /// nothing starts and an error is returned. On Linux this needs Landlock ABI 3
 /// or later. On Windows the tree runs in the AppContainer named by
-/// [`Confinement::container`] with no capabilities, so it has no network
-/// access; each listed path, and the program, must already be granted to it.
-/// Windows refuses [`UnixSocketAccess::HostServices`] with
-/// [`ProcessError::Unsupported`].
+/// [`Confinement::container`]. It holds no capability under
+/// [`NetworkAccess::Denied`] and only `internetClient` under
+/// [`NetworkAccess::Internet`]; each listed path, and the program, must
+/// already be granted to it. Windows refuses [`UnixSocketAccess::HostServices`]
+/// with [`ProcessError::Unsupported`].
 pub fn run_confined(
     spec: &ProcessSpec,
     confinement: &Confinement,
@@ -445,6 +518,83 @@ pub fn check_tree_limits() -> Result<(), ProcessError> {
             "tree limits are implemented only on Linux and Windows",
         ))
     }
+}
+
+/// What a started program receives as standard input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StdinMode {
+    /// The null device: end of file at once.
+    Null,
+    /// A pipe whose write end the caller owns.
+    Pipe,
+}
+
+/// Start one program under the same confinement and tree supervision as
+/// [`run_confined`], and hand its standard input and output pipes to the caller.
+///
+/// This is for a long-lived helper: the caller writes to the child's stdin
+/// and reads its stdout while it runs, and the platform keeps the same
+/// filesystem and network confinement, tree limits, deadline, and observed
+/// tree cleanup. A supervisor thread polls exactly as [`run_confined`] does
+/// and always ends by terminating the tree until it is observed empty.
+/// Standard error is captured, bounded by `max_stderr_bytes`.
+///
+/// `limits.max_stdout_bytes` is ignored: the caller reads standard output, so
+/// the runner retains none of it. The caller must keep reading it, because a
+/// child that fills the pipe blocks until the deadline ends the run.
+///
+/// Call [`StreamingChild::finish`] to stop the child and learn how it ended.
+/// Dropping the child is only a fallback; see [`StreamingChild`].
+///
+/// # Errors
+///
+/// The errors of [`run_confined`]. When one is returned, no process from this
+/// call remains.
+pub fn spawn_confined_streaming(
+    spec: &ProcessSpec,
+    confinement: &Confinement,
+    limits: &ProcessLimits,
+) -> Result<StreamingChild, ProcessError> {
+    let limits = limits.validate_streaming()?;
+    validate_spec(spec)?;
+    confinement.validate()?;
+    let disk = DiskMonitor::prepare(
+        Some(confinement),
+        limits.tree.and_then(|tree| tree.max_disk_bytes),
+    )?;
+    spawn_native_streaming(spec, confinement, limits, disk)
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_native_streaming(
+    spec: &ProcessSpec,
+    confinement: &Confinement,
+    limits: ProcessLimits,
+    disk: Option<DiskMonitor>,
+) -> Result<StreamingChild, ProcessError> {
+    linux::spawn_streaming(spec, confinement, limits, disk)
+}
+
+#[cfg(windows)]
+fn spawn_native_streaming(
+    spec: &ProcessSpec,
+    confinement: &Confinement,
+    limits: ProcessLimits,
+    disk: Option<DiskMonitor>,
+) -> Result<StreamingChild, ProcessError> {
+    windows::spawn_streaming(spec, confinement, limits, disk)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn spawn_native_streaming(
+    _spec: &ProcessSpec,
+    _confinement: &Confinement,
+    _limits: ProcessLimits,
+    _disk: Option<DiskMonitor>,
+) -> Result<StreamingChild, ProcessError> {
+    Err(ProcessError::Unsupported(
+        "process supervision is implemented only on Linux and Windows",
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -595,6 +745,9 @@ trait ProcessTree {
     fn release(&mut self) -> Result<(), ProcessError> {
         Ok(())
     }
+    /// Record that supervision ended without an unconfirmed cleanup, so the
+    /// tree's `Drop` has nothing left to terminate.
+    fn cleanup_confirmed(&mut self) {}
 }
 
 /// Capture threads for standard output and standard error.
@@ -672,7 +825,7 @@ fn receive(
         Ok(Ok(output)) => Ok(output),
         Ok(Err(error)) => Err(ProcessError::Supervision(error)),
         Err(RecvTimeoutError::Timeout) => Err(ProcessError::CleanupUnconfirmed(
-            "an output stream stayed open after the tree was empty",
+            UnconfirmedCleanup::new("an output stream stayed open after the tree was empty"),
         )),
         Err(RecvTimeoutError::Disconnected) => Err(ProcessError::Supervision(io::Error::other(
             "an output reader stopped without a result",
@@ -691,8 +844,42 @@ fn supervise(
     mut disk: Option<DiskMonitor>,
 ) -> Result<ProcessOutcome, ProcessError> {
     let watched = watch(tree, started, limits.deadline, cancel, disk.as_ref());
+    let settled = settle(tree, watched, started, limits, disk.take(), || {})?;
+    let (stdout, stderr) = capture.finish(Instant::now() + limits.cleanup_timeout)?;
+    Ok(ProcessOutcome {
+        termination: settled.termination,
+        confinement,
+        stdout,
+        stderr,
+        elapsed: settled.elapsed,
+        usage: settled.usage,
+    })
+}
+
+/// How a watched tree ended and what it used, once it was observed empty.
+struct Settled {
+    termination: Termination,
+    elapsed: Duration,
+    usage: Option<TreeUsage>,
+}
+
+/// Stop the tree after [`watch`] returned, observe it empty, read its usage,
+/// release its native state, and take the final disk sample. `on_empty` runs
+/// once, as soon as the tree is observed empty and before the usage and disk
+/// accounting, so a waiter can bound those separately from the cleanup.
+fn settle(
+    tree: &mut impl ProcessTree,
+    watched: io::Result<Termination>,
+    started: Instant,
+    limits: ProcessLimits,
+    mut disk: Option<DiskMonitor>,
+    on_empty: impl FnOnce(),
+) -> Result<Settled, ProcessError> {
     // Descendants never outlive the run, including after a normal exit.
     let stopped = stop_tree(tree, limits.cleanup_timeout);
+    if stopped.is_ok() {
+        on_empty();
+    }
     let mut termination = match (watched, stopped) {
         (Ok(termination), Ok(())) => termination,
         (_, Err(error)) => return Err(error),
@@ -717,12 +904,8 @@ fn supervise(
             usage.peak_disk_bytes = Some(disk.peak_growth());
         }
     }
-    let (stdout, stderr) = capture.finish(Instant::now() + limits.cleanup_timeout)?;
-    Ok(ProcessOutcome {
+    Ok(Settled {
         termination,
-        confinement,
-        stdout,
-        stderr,
         elapsed,
         usage,
     })
@@ -771,17 +954,32 @@ fn watch(
 }
 
 /// Terminate the tree until it is observed empty or the timeout elapses.
+///
+/// `Ok` means the tree was positively observed empty. Any failure before that
+/// observation, including a failed termination or emptiness check, is
+/// [`ProcessError::CleanupUnconfirmed`] with the native cause: processes may
+/// remain, so the tree's drop fallback must still kill it.
 fn stop_tree(tree: &mut impl ProcessTree, timeout: Duration) -> Result<(), ProcessError> {
     let until = Instant::now() + timeout;
     loop {
-        tree.terminate().map_err(ProcessError::Supervision)?;
-        if tree.is_empty().map_err(ProcessError::Supervision)? {
+        tree.terminate().map_err(|cause| {
+            ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::caused_by(
+                "the tree could not be terminated",
+                cause,
+            ))
+        })?;
+        if tree.is_empty().map_err(|cause| {
+            ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::caused_by(
+                "the tree could not be checked for remaining processes",
+                cause,
+            ))
+        })? {
             return Ok(());
         }
         if Instant::now() >= until {
-            return Err(ProcessError::CleanupUnconfirmed(
+            return Err(ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::new(
                 "processes remained after termination",
-            ));
+            )));
         }
         thread::sleep(POLL_INTERVAL);
     }

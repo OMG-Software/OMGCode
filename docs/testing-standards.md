@@ -55,7 +55,44 @@ limit ends the whole run as `LimitExceeded`. Since 0.19.0 the disk test writes
 past a 16 MiB limit and expects the `disk` result; the platform tests also
 exercise the sampler directly, including, on Unix, a link that must not be
 followed and a ceiling reached during a measured scan. Windows scenes grant
-the workspace and revoke every grant when dropped. The `toolchain_acceptance` tests run real toolchains. They are
+the workspace and revoke every grant when dropped.
+
+The `claude_code_process` tests run in a supervised copy of their binary,
+on Linux in its own delegated scope, with every temporary folder inside one
+folder of the supervising process. A test whose turn does not end even
+after its cancellation ends that copy, and no drop of the copy runs. The
+supervisor then stops what the copy left running: the copy's scope on
+Linux, where the copy's exit ends the fake and, through its closed pipes,
+the relay but no descendant that ignores them, while on Windows each tree's
+job ends with the copy. It waits until every fake's, relay's, and linger's
+alive lock is free and names the process that held it, on Windows revokes
+each connection left behind, which deletes its AppContainer profile (Linux
+has no grant or container profile to remove), and removes the folder. A
+folder whose scope could not be stopped, whose processes were not seen to
+end, or whose connection could not be revoked is kept and named, so nothing
+a retry or the operator needs is removed before the cleanup was confirmed.
+A copy still running after 20 minutes, as one whose test never returns
+would be, is ended and reaped before that cleanup, and fails the run; one
+that cannot be killed, or that has not exited 30 seconds after it was
+killed, leaves its folder kept and named. Each `systemctl`
+command of the scope's stop is bounded to two minutes, and one that runs
+longer fails the stop. On Windows a scene whose connection cannot be
+revoked when it is dropped keeps its folders for the supervisor's retry.
+`a_supervisor_stops_and_cleans_up_after_an_abandoned_turn` makes a copy end
+while its turn's fake, relay, and a linger run and checks that path;
+`a_supervisor_keeps_the_folder_when_the_scope_stop_fails`,
+`a_supervisor_keeps_the_folder_when_a_revocation_fails`, and
+`a_supervisor_keeps_the_folder_when_an_alive_file_names_no_holder` inject
+each failure and check that the folder is kept and named;
+`a_supervisor_ends_a_copy_that_runs_past_its_deadline` checks the copy's
+deadline; and, on Windows, `a_scene_whose_revocation_fails_keeps_its_folders`
+moves a granted folder aside so that the drop's revocation fails, checks
+that the scene is kept, and, with the folder back, that the retry revokes
+the connection and deletes its profile. The
+linger is a descendant of the fake that ignores its closed pipes and ends
+itself only after five minutes, so on Linux only the scope's stop ends it.
+
+The `toolchain_acceptance` tests run real toolchains. They are
 `#[ignore]` because they need host toolchains named by `OMGCODE_ACCEPT_*`
 variables. Run them explicitly with `--ignored` on both platforms and report
 each language that did not run. A missing variable fails the case rather than

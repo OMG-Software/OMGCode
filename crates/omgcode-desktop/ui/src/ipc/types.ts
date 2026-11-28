@@ -648,6 +648,15 @@ export type FixedHostedKind =
  */
 export type NewConnectionKind = LocalProviderKind | FixedHostedKind | "openai_compatible";
 
+/**
+ * A provider that drives a program on this computer: the operator's signed-in Claude Code CLI
+ * (ADR-0109). Only the trusted CLI records or uses one; this window can name and remove it.
+ */
+export type ProgramProviderKind = "claude_code";
+
+/** Every provider kind core records. */
+export type ProviderKind = NewConnectionKind | ProgramProviderKind;
+
 export interface ToolchainProfileView {
   name: string;
   platform: "linux" | "windows";

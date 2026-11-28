@@ -99,7 +99,8 @@ webview, and the fetch runs under the standing allow
 No other model network tool, and no Git or MCP tool, exists. Chat offers tools only for a
 workspace whose `model_tools` preference is enabled. A model write or command
 runs without a per-call approval only where the operator set it to `allow`.
-There are no other provider adapters. Every model tool call, executed or
+There are no other provider adapters than the OpenAI-compatible one and the
+Claude Code connection below. Every model tool call, executed or
 refused, is recorded in the model action journal, which the trusted
 `actions list` command shows; each call a session makes after its first
 fetched web content is marked `after_web_content`, and
@@ -151,7 +152,19 @@ Completions, replay, and compaction still send results as user text. Two
 read and list tool turns were observed to finish, and other plan usage is
 unverified
 ([ADR-0097](docs/adr/0097-send-a-tool-result-as-its-call-and-output-on-the-plan-route.md)).
-No native provider API, Claude subscription sign-in, or other login exists. Trusted
+A `claude_code` profile drives the operator's own signed-in, unmodified
+`claude` CLI, from the trusted CLI's `chat` and `session compact` only:
+OMGCode offers no Claude sign-in and never reads, stores, or passes the
+Claude credential. On Windows the process runs in the connection's own
+AppContainer with grants recorded by `workspace claude-code-grant`; its
+environment is built from nothing; its built-in tools, settings, plugins,
+and skills are switched off and its init report is checked; and OMGCode's
+tools reach it only through a relayed MCP stdio server over a per-turn pipe,
+through the same runtime checks. Revoking its grants or removing it ends
+its running turns before the command reports success. It is personal use,
+not evidence of Anthropic approval, and was tested with a fake `claude` only
+([ADR-0109](docs/adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
+No native provider API or other login exists. Trusted
 single-use approval records authorize one exact model-tool call. In the
 desktop shell the turn waits for the decision and the approved call completes
 in the same turn; on the CLI only a later identical call may consume an

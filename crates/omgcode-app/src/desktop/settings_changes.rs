@@ -44,10 +44,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use omgcode_core::control::{
-    AssignmentFailure, CONTAINER_GRANTS_SUPPORTED, ControlError, ControlStore, CredentialId,
-    CredentialStore, FolderGrant, MAX_PROVIDER_ENDPOINT_BYTES, ProviderAuth,
-    ProviderCredentialError, ProviderKind, ProviderProfileDeclaration, Revocations, SkippedGrant,
-    delete_unbound_credential,
+    AssignmentFailure, CLAUDE_CODE_TURN_STOP_WAIT, CONTAINER_GRANTS_SUPPORTED, ControlError,
+    ControlStore, CredentialId, CredentialStore, FolderGrant, MAX_PROVIDER_ENDPOINT_BYTES,
+    ProviderAuth, ProviderCredentialError, ProviderKind, ProviderProfileDeclaration, Revocations,
+    SkippedGrant, delete_unbound_credential, wait_for_claude_code_turns,
 };
 use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::provider::ModelEndpoint;
@@ -325,6 +325,7 @@ const fn provider_label(kind: ProviderKind) -> &'static str {
         ProviderKind::DeepSeek => "DeepSeek",
         ProviderKind::XAi => "xAI (Grok)",
         ProviderKind::OpenAiCompatible => "an OpenAI-compatible service",
+        ProviderKind::ClaudeCode => "Claude Code",
     }
 }
 
@@ -1110,8 +1111,9 @@ impl DesktopService {
     ///
     /// # Errors
     ///
-    /// `invalid_request` for an oversized value, a mismatched field, or a key
-    /// that is empty, too long, or has a control character; `control` with
+    /// `invalid_request` for an oversized value, a mismatched field, a
+    /// `claude_code` kind, which only the trusted CLI records (ADR-0109), or
+    /// a key that is empty, too long, or has a control character; `control` with
     /// core's reason (a bad name, a duplicate, or an endpoint its kind's rule
     /// refuses); `credential_unavailable`,
     /// `credential_locked`, `credential_io`, `credential_orphaned`,
@@ -1134,6 +1136,13 @@ impl DesktopService {
                 .is_some_and(|text| text.len() > MAX_PROVIDER_ENDPOINT_BYTES)
         {
             return Err(DesktopError::invalid_request("A value is too long."));
+        }
+        // Only the trusted CLI records a program connection (ADR-0109), so
+        // the request is refused before its key is read.
+        if kind.runs_program() {
+            return Err(DesktopError::invalid_request(
+                "A Claude Code connection is added with the trusted CLI.",
+            ));
         }
         let fixed = kind.fixed_endpoint();
         let (endpoint, auth, secret) = match (kind.is_local(), fixed, endpoint, api_key) {
@@ -1308,20 +1317,25 @@ impl DesktopService {
     /// `credential_unavailable` or `credential_locked` (the native store is
     /// checked before anything is removed); `credential_orphaned` (the
     /// profile is removed but its native item was not deleted);
-    /// `settings_change_running`; `busy`.
+    /// `settings_change_running`; `busy`; and `control` when a removed Claude
+    /// Code connection's running turn did not end within 30 seconds.
     pub fn settings_remove_connection(
         &self,
         request: ConnectionRemoveRequest,
         prompt: &dyn SettingsPrompt,
     ) -> Result<SettingsOverview, DesktopError> {
         let _guard = ChangeGuard::take(&self.inner.settings_change)?;
-        let (confirmation, bound) = {
+        let (confirmation, bound, claude_code) = {
             let store = self.inner.open_or_create_control()?;
             check_revision(&store, request.revision)?;
             let status = store
                 .provider_profile(&request.name)
                 .ok_or_else(|| DesktopError::from_control(&ControlError::UnknownProvider))?;
             let bound = status.credential().is_some();
+            let claude_code = status
+                .profile()
+                .claude_code_setup()
+                .map(|_| status.profile().id());
             let active = store
                 .active_provider_profile()
                 .is_some_and(|active| active.profile().id() == status.profile().id());
@@ -1351,7 +1365,7 @@ impl DesktopService {
                 }),
                 (false, None) => None,
             };
-            (confirmation, bound)
+            (confirmation, bound, claude_code)
         };
         if let Some(confirmation) = confirmation {
             confirm(prompt, &confirmation)?;
@@ -1369,7 +1383,7 @@ impl DesktopService {
         // Core checks the same revision again, so a credential bound after the
         // check above makes the removal a revision conflict, not a removal
         // that strands the native item.
-        self.apply_checked(|store| {
+        let overview = self.apply_checked(|store| {
             let removal = store
                 .remove_provider_profile(&request.name, request.revision)
                 .map_err(|error| DesktopError::from_control(&error))?;
@@ -1383,7 +1397,19 @@ impl DesktopService {
                 (Some(binding), None) => Err(DesktopError::removed_key_orphaned(binding.id())),
                 (None, _) => Ok(()),
             }
-        })
+        })?;
+        // A removed Claude Code connection's running turns end once their
+        // watchers read the released settings; the removal reports success
+        // only after each of their processes was observed ended (ADR-0109).
+        if let Some(profile_id) = claude_code {
+            wait_for_claude_code_turns(
+                &self.inner.data_root,
+                profile_id,
+                CLAUDE_CODE_TURN_STOP_WAIT,
+            )
+            .map_err(|error| DesktopError::from_control(&error))?;
+        }
+        Ok(overview)
     }
 
     /// As [`apply_checked`](Self::apply_checked) for a change that fails only

@@ -26,7 +26,8 @@ unused_must_use = "deny"
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix.workspace = true
+# `net` and `event` serve the private Unix socket in `ipc`; no crate is added.
+rustix = { workspace = true, features = ["net", "event"] }
 secret-service.workspace = true
 zbus.workspace = true
 

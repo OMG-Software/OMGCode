@@ -1,4 +1,5 @@
 pub mod chatgpt;
+pub mod claude_code;
 mod effort;
 mod hosted;
 mod models;
@@ -401,6 +402,9 @@ pub enum ProviderError {
     /// already delivered stays delivered, and no reply exists.
     #[error("local model request was cancelled")]
     Cancelled,
+    /// A Claude Code run failed (ADR-0109).
+    #[error("{}", .0.description())]
+    ClaudeCode(claude_code::ClaudeCodeFailure),
 }
 
 #[derive(Serialize)]
@@ -1348,7 +1352,7 @@ impl ToolModel for LocalToolModel<'_> {
 }
 
 /// Collapse provider failures into the runtime's bounded categories.
-const fn model_error(error: ProviderError) -> ModelError {
+pub(crate) const fn model_error(error: ProviderError) -> ModelError {
     match error {
         ProviderError::RequestTooLarge | ProviderError::ContextLimit => ModelError::RequestTooLarge,
         ProviderError::Transport
@@ -1357,8 +1361,17 @@ const fn model_error(error: ProviderError) -> ModelError {
         | ProviderError::IncompleteStream
         | ProviderError::ResponseFailed(_)
         | ProviderError::SignInRequired
-        | ProviderError::AccessTokenUnavailable => ModelError::Transport,
+        | ProviderError::AccessTokenUnavailable
+        | ProviderError::ClaudeCode(
+            claude_code::ClaudeCodeFailure::NotSignedIn
+            | claude_code::ClaudeCodeFailure::Failed
+            | claude_code::ClaudeCodeFailure::Withdrawn
+            | claude_code::ClaudeCodeFailure::TurnRecordsFull,
+        ) => ModelError::Transport,
         ProviderError::Cancelled => ModelError::Cancelled,
+        ProviderError::ClaudeCode(
+            claude_code::ClaudeCodeFailure::Lockdown | claude_code::ClaudeCodeFailure::Protocol,
+        ) => ModelError::InvalidResponse,
         ProviderError::InvalidConfiguration
         | ProviderError::InvalidToken
         | ProviderError::ResponseTooLarge

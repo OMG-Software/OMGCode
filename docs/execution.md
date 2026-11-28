@@ -903,6 +903,138 @@ its target, and every later action in the same session carries
 `after_web_content` (see the
 [model action journal](workspace-permissions.md#model-action-journal)).
 
+### Claude Code connection process
+
+Version 0.72.0 starts the operator's signed-in `claude` program as a model
+connection
+([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
+It is not a run: no model tool starts it, it uses no toolchain profile and no
+workspace container, and the run journal does not record it. Each model
+request of a `chat` or `session compact` that names a `claude_code` profile
+starts one confined process through the same streaming spawn as trusted runs,
+and a tool turn keeps that process for all its rounds.
+
+- **Container.** On Windows the process runs in the connection's own
+  AppContainer, `OMGCode.ClaudeCode.<profile id as 32 hex digits>`, with the
+  `internetClient` capability. `omgcode workspace claude-code-grant <name>
+  --revision <n>` grants it read-execute on the program's folder, on the
+  folder of the `omgcode` executable that runs the command (the MCP relay),
+  and on the connection's runtime folder (`claude-code/<profile id>` in
+  application storage, created by the grant), and read-write on the sign-in
+  folder. Each grant is recorded before and after its ACL change, with the
+  same grant reserve as workspace grants. `omgcode workspace
+  claude-code-revoke <name>` revokes them all and deletes the container
+  profile; it needs no revision, refuses a profile of another kind, and also
+  deletes a container profile that an interrupted revocation left. A grant
+  checks its whole plan before it records the first intent. A profile with
+  grants cannot be removed, and a turn refuses to start until every role
+  holds an active grant for the folder it names. A folder that holds the
+  development root, a workspace, or application storage, or is a drive root
+  or the home folder or its ancestor, is refused. The sign-in folder must
+  also stay apart from every workspace container grant, every other
+  connection's sign-in folder, and every other connection's program and
+  relay grants, and a new development root, workspace container grant, or
+  other connection's program or relay folder may not overlap it. A grant or
+  sign-in record whose folder changed is refused until that grant is
+  revoked or that connection removed, because it proves no separation. A
+  moved, granted sign-in folder blocks both, since a revocation needs each
+  folder at its recorded path: restore the same folder to that path, run
+  `claude-code-revoke`, and then remove the connection. A folder that
+  cannot be restored has no verified safe recovery.
+- **Linux.** Landlock allows reading the program and relay folders, the
+  per-turn folder, `/usr`, `/lib`, `/lib64`, `/bin`, the network support
+  files, and `/dev/zero`, `/dev/random`, and `/dev/urandom`, and writing the
+  sign-in folder, the per-turn temporary folder, and `/dev/null`. The
+  seccomp filter allows IP sockets and `AF_UNIX`. No grant is recorded; the
+  runtime folder is created with mode `0700`.
+- **Limits.** The process tree has 4 GiB of memory, 512 processes, four
+  hours of CPU time, a one-hour deadline, 64 KiB of captured standard error,
+  and no disk-growth limit. On Linux the CLI must run in a delegated cgroup
+  v2, as for `run`. Cancellation, a lockdown failure, and every other
+  failure end the whole tree, and the end is observed before the turn
+  returns. A failed termination or emptiness check counts as unconfirmed
+  cleanup, so the tree's own fallback kill still runs.
+- **Withdrawal.** Each process holds a shared lock on
+  `claude-code/<profile id>.turns` in application storage, outside every
+  grant, from before its per-turn folder is made until its whole tree was
+  observed ended and its relay workers stopped; a worker still running
+  then keeps the lock until it ends. Under that lock the turn first writes
+  and syncs a turn record, `claude-code/<profile id>.<turn id>.unconfirmed`,
+  that names the connection, its sign-in folder, and the program and relay
+  folders the turn reads, and it removes the record only after that
+  observed end. A lock whose tree's end was not
+  confirmed, also of a tree the launch could not stop, stays held until the
+  OMGCode process exits, and its record outlives that process. While a
+  record exists, every wait below fails with a `control` error, and the
+  record reserves the sign-in folder, also once the connection is removed,
+  so no new connection can record an overlapping folder. It also reserves
+  the program and relay folders, which on Linux no grant records: no other
+  connection's sign-in folder that overlaps either, or with either moved
+  since, is recorded while it exists, and a separate one still is. Before running
+  `omgcode workspace claude-code-acknowledge <profile id>`, check the
+  connection's entire `claude` process tree, including its MCP relays and
+  their descendants; if you cannot confirm that the tree ended, keep the
+  record. The command removes the connection's records under the exclusive
+  lock, is refused while a turn holds the lock, and records nothing about
+  that check. At most 256 records are kept across every connection. A turn
+  counts them and writes its own under one exclusive lock,
+  `claude-code/turn-records.lock`, so two turns cannot both take the last
+  free record, and one that waits five seconds for that lock starts
+  nothing. The record is written whole under a `.staging` name that no
+  reader lists and renamed into place under that lock, so a check that
+  reads the records without the lock sees a whole record or none; one that
+  a crash left staged started no process and reserves nothing. A record
+  removed after such a check listed it reserves nothing, and one that
+  exists but cannot be read is still refused. A turn that finds 256
+  records starts nothing and fails with
+  `claude_code_turn_records_full`, whose message names the acknowledgement
+  and the process-tree check before it, a sign-in folder check that finds
+  more fails with a `control` error that names the acknowledgement, and the
+  acknowledgement still clears a connection's records while the inventory
+  is full. After it wrote its record and before the launch, the turn
+  checks every settings state recorded since it resolved the connection, so
+  a removal that this check misses finds the record. While the
+  process runs a watcher checks each later state every 100 ms and once more
+  as it stops. A state that removes the connection, on Windows leaves a
+  role without an active grant, or records another connection's sign-in
+  folder in the turn's program or relay folder ends the tree, and the turn
+  fails with
+  `claude_code_withdrawn`; unreadable settings and a watcher that panicked
+  do the same. `workspace claude-code-revoke`, `workspace
+  provider-profile-remove`, and the `settings` window's removal record the
+  change, release the settings, and wait up to 30 seconds for an exclusive
+  lock. A turn that does not end in time fails the command with a `control`
+  error that says the change is recorded. A revocation that fails after it
+  recorded a withdrawal also waits, and reports both outcomes. On Linux
+  `claude-code-revoke` changes nothing, because no grant exists, and
+  `provider-profile-remove` is what withdraws a connection.
+- **Standard streams.** Standard input carries the rendered conversation
+  and is then closed. Standard output is read as bounded stream-json lines;
+  nothing it says is trusted. The tool channel is a named pipe (Windows) or a
+  socket in a `0700` per-turn folder (Linux) that the relay reaches after a
+  per-turn nonce, not an inherited handle. At most eight output events wait
+  for the turn, so a turn that is running a call or waiting for an approval
+  holds back the process's output. Each write to the relay ends at the
+  request timeout or on cancellation; it counts as finished only once its
+  writer recorded it after the flush, so one stopped first fails the turn
+  even if its bytes went out. The writer samples the cancellation and the
+  deadline once, just before its record, and that sample decides: either
+  one that came first, also one the watcher had not yet seen, fails the
+  write, and neither one after it fails a write recorded in time. Calls go
+  to the turn runtime only while no queued output that the turn would
+  refuse waits behind them: a malformed line, the end of the output, input
+  that never fully arrived, a second init report, a tool or message naming
+  a tool the lockdown refuses, a failed sign-in, a result while the calls
+  would be held, or text past the budget once added to the text queued
+  before it. Status output and accepted text and messages do not hold the
+  calls back. The main agent's streamed text and its final text, which
+  repeats it, each have an 8 MiB budget. The Linux folder has a random
+  name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
+  that is unset, relative, cannot be resolved to its canonical path (as
+  when it does not exist), not UTF-8, or longer than 73 bytes once
+  resolved and encoded, because a socket path must fit in 107 bytes and
+  one beneath application storage does not.
+
 ### Toolchain profiles
 
 Profiles are declared by the operator. Nothing is recorded automatically: the
