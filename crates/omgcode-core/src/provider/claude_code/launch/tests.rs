@@ -1,16 +1,25 @@
 //! A session's round, driven from a queue the test fills (ADR-0109).
 
+use std::fs;
 use std::path::Path;
+use std::sync::PoisonError;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use uuid::Uuid;
 
+use super::super::ClaudeCodeFailure;
 use super::super::mcp::{McpServer, McpTool};
 use super::{
-    EVENT_QUEUE, Event, Next, Progress, SERVER_NAME, Session, TOOL_PREFIX, TurnFolder, WriteRace,
+    EVENT_QUEUE, Event, Next, Progress, SERVER_NAME, Session, TOOL_PREFIX, TurnFolder,
+    UNCONFIRMED_TURNS, WriteRace, raced_write,
 };
+use crate::control::{ClaudeCodeWatch, ControlError, wait_for_claude_code_turns};
+use crate::provider::ProviderError;
 use crate::provider::claude_code::stream::parse_line;
 use crate::turn::CancelToken;
 
@@ -228,6 +237,146 @@ fn a_write_that_finished_first_is_not_reported_as_stopped() {
     assert!(!race.running());
     assert!(!race.stop(), "the watcher's later stop loses");
     assert!(!race.finish(), "the end is recorded once");
+}
+
+/// The writer is held after its I/O until the watcher stopped the write,
+/// as when it is descheduled between its flush and the record, for at most
+/// 30 seconds. Returns whether the stop came.
+fn held_until(stopped: &AtomicBool) -> bool {
+    let until = Instant::now() + Duration::from_secs(30);
+    while !stopped.load(Ordering::SeqCst) {
+        if Instant::now() >= until {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    true
+}
+
+/// A write whose bytes went out but that is recorded finished only after
+/// its deadline passed fails the turn and stops the tree: a write counts as
+/// finished only once the writer recorded it.
+#[test]
+fn a_write_recorded_after_its_deadline_fails_and_stops_the_tree() {
+    let stopped = AtomicBool::new(false);
+    let mut sent = false;
+    let mut stop_came = false;
+    let result = raced_write(
+        || {
+            sent = true;
+            stop_came = held_until(&stopped);
+            Ok(())
+        },
+        &CancelToken::new(),
+        Instant::now() + Duration::from_millis(50),
+        || stopped.store(true, Ordering::SeqCst),
+    );
+    assert!(sent && stop_came, "the I/O finished before the stop");
+    assert!(
+        matches!(
+            result,
+            Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+        ),
+        "{result:?}"
+    );
+}
+
+/// As above for a cancellation, which the turn reports as cancelled.
+#[test]
+fn a_write_recorded_after_a_cancellation_is_cancelled_and_stops_the_tree() {
+    let stopped = AtomicBool::new(false);
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let mut stop_came = false;
+    let result = raced_write(
+        || {
+            stop_came = held_until(&stopped);
+            Ok(())
+        },
+        &cancel,
+        Instant::now() + Duration::from_secs(3600),
+        || stopped.store(true, Ordering::SeqCst),
+    );
+    assert!(stop_came);
+    assert!(
+        matches!(result, Err(ProviderError::Cancelled)),
+        "{result:?}"
+    );
+}
+
+/// A write recorded before its deadline succeeds and never stops the tree,
+/// and a failed one is a protocol failure.
+#[test]
+fn a_write_recorded_in_time_succeeds_without_stopping_the_tree() {
+    let stopped = AtomicBool::new(false);
+    let deadline = Instant::now() + Duration::from_secs(3600);
+    let cancel = CancelToken::new();
+    let stop = || stopped.store(true, Ordering::SeqCst);
+    raced_write(|| Ok(()), &cancel, deadline, stop).expect("written");
+    let failed = raced_write(
+        || Err(std::io::Error::other("broken channel")),
+        &cancel,
+        deadline,
+        stop,
+    );
+    assert!(
+        matches!(
+            failed,
+            Err(ProviderError::ClaudeCode(ClaudeCodeFailure::Protocol))
+        ),
+        "{failed:?}"
+    );
+    assert!(
+        !stopped.load(Ordering::SeqCst),
+        "the tree was never stopped"
+    );
+}
+
+/// A session whose tree was not observed ended keeps the connection's turn
+/// lock and records the marker, so a revocation fails while this process
+/// runs and also after it exits: both for a tree whose end its session
+/// could not confirm and for one the launch could not stop before the
+/// session owned it. A session whose tree ended releases the lock and
+/// records nothing.
+#[test]
+fn an_unconfirmed_tree_end_keeps_the_turn_lock_and_records_the_marker() {
+    let data = TempDir::new().expect("data folder");
+    fs::create_dir(data.path().join("claude-code")).expect("runtime parent");
+    let short = Duration::from_millis(200);
+    // (the tree was observed ended, the launch could not stop a tree)
+    for (ended, unstopped) in [(true, false), (false, false), (true, true)] {
+        let profile_id = Uuid::new_v4();
+        let watch = ClaudeCodeWatch::for_tests(data.path().to_owned(), profile_id);
+        let runtime = TempDir::new().expect("runtime folder");
+        let (mut session, _sender) = session(runtime.path());
+        session.turn_lock = Some(watch.lock_turn().expect("lock").expect("free"));
+        session.turn_watch = Some(watch);
+        session.unconfirmed = unstopped;
+        session.release_turn(ended);
+        drop(session);
+        let waited = wait_for_claude_code_turns(data.path(), profile_id, short);
+        if ended && !unstopped {
+            waited.expect("an observed end releases the lock");
+            continue;
+        }
+        assert!(
+            matches!(waited, Err(ControlError::ClaudeCodeTurnsRunning)),
+            "the lock is held while this process runs: {waited:?}"
+        );
+        // This process's exit releases the held lock; no other test of this
+        // binary leaves an unconfirmed end, so the last one held is this.
+        let held = UNCONFIRMED_TURNS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop();
+        assert!(held.is_some(), "the lock was kept");
+        drop(held);
+        let waited = wait_for_claude_code_turns(data.path(), profile_id, short);
+        assert!(
+            matches!(waited, Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == profile_id),
+            "the marker outlives the lock: {waited:?}"
+        );
+    }
 }
 
 #[test]

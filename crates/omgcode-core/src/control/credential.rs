@@ -941,7 +941,8 @@ pub(super) fn binding_write_uncertain(error: &ControlError) -> bool {
         | ControlError::Skill(_)
         | ControlError::UnknownApproval
         | ControlError::ApprovalRefused(_)
-        | ControlError::ClaudeCodeTurnsRunning => false,
+        | ControlError::ClaudeCodeTurnsRunning
+        | ControlError::ClaudeCodeCleanupUnconfirmed(_) => false,
     }
 }
 

@@ -42,7 +42,12 @@ Changes are recorded here before a release version is assigned.
   connection before it starts, and is ended by a watcher when a later state
   revokes one of its grants or removes it. The watcher checks once more as
   it stops, a watcher that panicked fails the turn, and the turn lock of a
-  process whose end was not confirmed stays held until OMGCode exits.
+  process whose end was not confirmed, also of a tree the launch could not
+  stop, stays held until OMGCode exits. Such an end also syncs a marker
+  beside the lock that outlives OMGCode, and every later revocation and
+  removal of the connection fails until `workspace claude-code-acknowledge
+  <profile id>` removes it; that command is refused while a turn runs and
+  claims nothing about the processes.
   `workspace claude-code-revoke`, `workspace provider-profile-remove`, and
   the `settings` window's removal wait up to 30 seconds for those processes
   to end, or fail with a `control` error that says the change is recorded;
@@ -54,14 +59,18 @@ Changes are recorded here before a release version is assigned.
   connection's program and relay grants, and a program or relay folder
   stays apart from every other connection's sign-in folder. A grant or
   sign-in record whose folder changed proves no separation, so it is
-  refused until that grant is revoked or that connection removed. A grant
+  refused until that grant is revoked or that connection removed; on
+  Windows a moved, granted sign-in folder is restored to its recorded path,
+  revoked, and then removed, and one that cannot be restored has no
+  verified safe recovery. A grant
   checks its whole plan before it records anything, and revoking retries a
   container profile deletion that was interrupted. At most eight output
   events queue for the turn, and calls are handed off at the end of each
   batch of queued events, so a steady stream cannot hold one back. Every
   relay write has a deadline at which the channel is shut and the process
   tree ended, and a write that finished first is never reported as
-  stopped. The main agent's text has an 8 MiB budget, a sub-agent's text
+  stopped. A write counts as finished only once its writer recorded it, so
+  one stopped first fails the turn even if its bytes went out. The main agent's text has an 8 MiB budget, a sub-agent's text
   delta is checked before it is ignored, a reused MCP request identifier is
   refused, the rendered prompt's size is checked before it is copied, a
   call whose cancellation is already queued is retired before any call is

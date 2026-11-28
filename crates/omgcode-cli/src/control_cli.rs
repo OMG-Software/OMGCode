@@ -7,7 +7,7 @@ use omgcode_core::control::{
     AssignmentFailure, CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeRevokeFailure,
     ContainerGrantAccess, ControlError, ControlStore, CredentialId, FolderGrant,
     PackageProfileDeclaration, ProfileDeclaration, ProviderProfileDeclaration, Revocations,
-    wait_for_claude_code_turns,
+    acknowledge_claude_code_cleanup, wait_for_claude_code_turns,
 };
 use omgcode_core::policy::{
     Access, Operation, PermissionSet, PolicyRequest, WorkspaceId, WriteTool,
@@ -296,6 +296,13 @@ pub(crate) enum WorkspaceCommand {
     /// grants, so there this changes nothing and running turns continue;
     /// `provider-profile-remove` is what withdraws a connection there.
     ClaudeCodeRevoke { name: String },
+    /// Clear the record that a turn of the Claude Code connection with this
+    /// profile identifier ended without its process tree being observed
+    /// ended. Until then every revocation and removal of the connection
+    /// fails. Check first that no `claude` process of the connection
+    /// remains: this claims nothing about them. Refused while a turn of the
+    /// connection still runs.
+    ClaudeCodeAcknowledge { profile_id: String },
 }
 
 /// Sign a profile in with ChatGPT. The settings store is not held while the
@@ -975,6 +982,17 @@ pub(crate) fn run(action: WorkspaceCommand, data_root: &Path) -> Result<(), CliE
                 .map_err(control_error)?;
             }
             print_json(&output)
+        }
+        WorkspaceCommand::ClaudeCodeAcknowledge { profile_id } => {
+            let profile_id = Uuid::parse_str(&profile_id).map_err(|_| {
+                CliError::new("configuration", "Invalid provider profile identifier")
+            })?;
+            let acknowledged =
+                acknowledge_claude_code_cleanup(data_root, profile_id).map_err(control_error)?;
+            print_json(&json!({
+                "provider_profile_id": profile_id,
+                "acknowledged": acknowledged,
+            }))
         }
         WorkspaceCommand::ContainerRevoke { grant } => {
             let mut store = open_existing(data_root)?

@@ -936,7 +936,11 @@ and a tool turn keeps that process for all its rounds.
   relay grants, and a new development root, workspace container grant, or
   other connection's program or relay folder may not overlap it. A grant or
   sign-in record whose folder changed is refused until that grant is
-  revoked or that connection removed, because it proves no separation.
+  revoked or that connection removed, because it proves no separation. A
+  moved, granted sign-in folder blocks both, since a revocation needs each
+  folder at its recorded path: restore the same folder to that path, run
+  `claude-code-revoke`, and then remove the connection. A folder that
+  cannot be restored has no verified safe recovery.
 - **Linux.** Landlock allows reading the program and relay folders, the
   per-turn folder, `/usr`, `/lib`, `/lib64`, `/bin`, the network support
   files, and `/dev/zero`, `/dev/random`, and `/dev/urandom`, and writing the
@@ -953,8 +957,15 @@ and a tool turn keeps that process for all its rounds.
 - **Withdrawal.** Each process holds a shared lock on
   `claude-code/<profile id>.turns` in application storage, outside every
   grant, from before its per-turn folder is made until its tree was
-  observed ended; a lock whose tree's end was not confirmed stays held until
-  the OMGCode process exits. Before the launch the turn checks every
+  observed ended. A lock whose tree's end was not confirmed, also of a tree
+  the launch could not stop, stays held until the OMGCode process exits,
+  and a marker, `claude-code/<profile id>.unconfirmed`, is synced beside it
+  and outlives that process. While the marker exists, every wait below
+  fails with a `control` error, until `omgcode workspace
+  claude-code-acknowledge <profile id>` removes it under the exclusive
+  lock; that command is refused while a turn runs and claims nothing about
+  the processes, so check first that no `claude` process of the connection
+  remains. Before the launch the turn checks every
   settings state recorded since it resolved the connection, and while the
   process runs a watcher checks each later state every 100 ms and once more
   as it stops. A state that removes the connection or, on Windows, leaves a
@@ -975,8 +986,9 @@ and a tool turn keeps that process for all its rounds.
   per-turn nonce, not an inherited handle. At most eight output events wait
   for the turn, so a turn that is running a call or waiting for an approval
   holds back the process's output. Each write to the relay ends at the
-  request timeout or on cancellation, and the main agent's text has an
-  8 MiB budget. The Linux folder has a random
+  request timeout or on cancellation; it counts as finished only once its
+  writer recorded it after the flush, so one stopped first fails the turn
+  even if its bytes went out. The main agent's text has an 8 MiB budget. The Linux folder has a random
   name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
   that is unset, relative, or too long, because a socket path must fit in
   107 bytes and one beneath application storage does not.

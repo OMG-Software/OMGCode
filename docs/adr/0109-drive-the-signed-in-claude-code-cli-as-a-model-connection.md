@@ -87,7 +87,12 @@ Haiku request with one tool call.
    folder either. A grant or sign-in record whose folder changed proves no
    separation: a moved folder can keep its access-control entries and lie
    anywhere, so the check refuses until that grant is revoked or that
-   connection removed. OMGCode has no Claude sign-in command. It never opens, reads,
+   connection removed. On Windows a connection with grants cannot be
+   removed, and its revocation needs each folder at its recorded path, so a
+   moved, granted sign-in folder is recovered by restoring the same folder
+   to its recorded path, revoking the grants, and then removing the
+   connection. A folder that cannot be restored has no verified safe
+   recovery. OMGCode has no Claude sign-in command. It never opens, reads,
    copies, stores, or passes a file or token from that folder. It only checks
    the folder's identity, sets `CLAUDE_CONFIG_DIR` for the child, and, on
    Windows, grants the child's container access to the folder.
@@ -128,9 +133,18 @@ Haiku request with one tool call.
    beside the runtime folder and outside every grant. Before the per-turn
    folder is made, the turn takes that lock and checks every settings state
    recorded since it resolved the connection. It releases the lock only after
-   the tree was observed ended; when the end cannot be confirmed, the lock
-   stays held until the OMGCode process exits, so a revocation reports the
-   turn as running. While the process runs, a watcher thread checks each
+   the tree was observed ended. When the end cannot be confirmed, and when a
+   launch started a tree that it could not stop, the lock stays held until
+   the OMGCode process exits, so a revocation reports the turn as running,
+   and a marker, `claude-code/<profile id>.unconfirmed`, is synced beside
+   it. The end of the OMGCode process proves nothing about the tree, so the
+   marker outlives it: every later wait for the connection's turns fails
+   with a `control` error that names `workspace claude-code-acknowledge
+   <profile id>`. That command removes the marker under the exclusive lock,
+   so it is refused while a turn runs, and claims nothing about the
+   processes, as `runs acknowledge` claims nothing about a run's; the
+   operator first checks that no `claude` process of the connection
+   remains. While the process runs, a watcher thread checks each
    later state every 100 ms, and once more as it stops, so the turn's
    result counts only after every state up to its end was checked. A state
    that removes the connection or, on Windows, leaves one of its roles
@@ -185,7 +199,9 @@ Haiku request with one tool call.
    the relay's side, so the write ends even when the shutdown request fails.
    The writer and its watcher record the write's end with one
    compare-and-swap, so a write that finished first is never reported as
-   stopped. Before an answer is written, the relay's events already queued
+   stopped. A write counts as finished only once the writer recorded it,
+   after its flush returned: one whose bytes went out but that the watcher
+   stopped first still fails the turn and ends the tree. Before an answer is written, the relay's events already queued
    are handled and the process's output is kept, in order, for the next
    round, so a cancellation sent while the runtime ran the call withholds
    the answer.
@@ -320,6 +336,9 @@ Haiku request with one tool call.
   A `claude` update that moves the program to another folder makes the
   recorded program stale; the connection is then refused until it is
   revoked, removed, and recorded again.
+- A turn whose tree was not observed ended blocks every revocation and
+  removal of its connection until the operator acknowledges it, also after
+  OMGCode restarts. The acknowledgement rests on the operator's own check.
 - A revocation or removal waits up to 30 seconds for running turns. The
   wait proves the processes ended, not that their effects were undone: text
   streamed before the change was already shown, and tool calls that ran

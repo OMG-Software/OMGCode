@@ -11,6 +11,12 @@
 //! A process's watcher rechecks every settings state recorded after its turn
 //! resolved the connection, not only the latest, so a change undone before
 //! the watcher reads the settings still stops it.
+//!
+//! A turn whose tree was not observed ended keeps its lock until the OMGCode
+//! process exits and also leaves a marker beside the lock, which outlives
+//! that process: the end of a host proves nothing about the tree. Every wait
+//! fails while the marker exists, until the operator acknowledges it, as
+//! `runs acknowledge` does for a run.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
@@ -32,6 +38,10 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// The suffix of a connection's turn lock file name.
 const TURN_LOCK_SUFFIX: &str = ".turns";
+
+/// The suffix of the marker that a turn whose tree was not observed ended
+/// leaves beside the lock.
+const UNCONFIRMED_SUFFIX: &str = ".unconfirmed";
 
 /// The settings one turn of a Claude Code connection was resolved from: the
 /// application storage, the connection, and how many settings events were
@@ -69,6 +79,33 @@ impl ClaudeCodeWatch {
             profile_id,
             events,
         }
+    }
+
+    /// A watch of `profile_id`'s turns in `data_root`, for tests that need
+    /// only its lock and marker.
+    #[cfg(test)]
+    pub(crate) const fn for_tests(data_root: PathBuf, profile_id: Uuid) -> Self {
+        Self::new(data_root, profile_id, 0)
+    }
+
+    /// Record, durably, that a turn's process tree was not observed ended.
+    /// Every later wait for the connection's turns fails, also after this
+    /// process exits, until [`acknowledge_claude_code_cleanup`] clears it.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error that stopped creating or syncing the marker.
+    pub(crate) fn record_unconfirmed_cleanup(&self) -> io::Result<()> {
+        let mut options = OpenOptions::new();
+        options.write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options
+            .open(unconfirmed_path(&self.data_root, self.profile_id))?
+            .sync_all()
     }
 
     /// A cursor at the state the turn was resolved from.
@@ -170,8 +207,9 @@ impl ControlStore {
 /// # Errors
 ///
 /// [`ControlError::ClaudeCodeTurnsRunning`] when a turn still holds the lock
-/// after `timeout`, and [`ControlError::Io`] when the lock file cannot be
-/// opened or locked.
+/// after `timeout`, [`ControlError::ClaudeCodeCleanupUnconfirmed`] while a
+/// turn's unconfirmed end is not acknowledged, and [`ControlError::Io`] when
+/// the lock file or the marker cannot be checked.
 pub fn wait_for_claude_code_turns(
     data_root: &Path,
     profile_id: Uuid,
@@ -192,7 +230,9 @@ pub(super) fn wait_for_turns_observed(
     // the recorded change when it checks the settings before its launch.
     let file = match open_turn_lock(data_root, profile_id, false) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return refuse_unconfirmed(data_root, profile_id);
+        }
         Err(error) => return Err(ControlError::Io(error)),
     };
     let until = Instant::now()
@@ -201,9 +241,10 @@ pub(super) fn wait_for_turns_observed(
     loop {
         match file.try_lock() {
             Ok(()) => {
+                let unconfirmed = refuse_unconfirmed(data_root, profile_id);
                 // Dropping the handle releases the lock too.
                 let _ = file.unlock();
-                return Ok(());
+                return unconfirmed;
             }
             Err(TryLockError::WouldBlock) if Instant::now() < until => {
                 contended();
@@ -213,6 +254,58 @@ pub(super) fn wait_for_turns_observed(
             Err(TryLockError::Error(error)) => return Err(ControlError::Io(error)),
         }
     }
+}
+
+/// Clear the record that a turn of the Claude Code connection `profile_id`
+/// ended without its process tree being observed ended. The operator first
+/// checks that no `claude` process of the connection remains; this claims
+/// nothing about them. `Ok(false)` when nothing was recorded.
+///
+/// # Errors
+///
+/// [`ControlError::ClaudeCodeTurnsRunning`] while a turn of the connection
+/// still holds its lock, including one whose end this process could not
+/// confirm, and [`ControlError::Io`] when the lock or the marker cannot be
+/// used.
+pub fn acknowledge_claude_code_cleanup(
+    data_root: &Path,
+    profile_id: Uuid,
+) -> Result<bool, ControlError> {
+    // The exclusive lock keeps a turn from starting while the marker goes.
+    let lock = match open_turn_lock(data_root, profile_id, false) {
+        Ok(file) => match file.try_lock() {
+            Ok(()) => Some(file),
+            Err(TryLockError::WouldBlock) => return Err(ControlError::ClaudeCodeTurnsRunning),
+            Err(TryLockError::Error(error)) => return Err(ControlError::Io(error)),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(ControlError::Io(error)),
+    };
+    let removed = match std::fs::remove_file(unconfirmed_path(data_root, profile_id)) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(ControlError::Io(error)),
+    };
+    drop(lock);
+    removed
+}
+
+/// [`ControlError::ClaudeCodeCleanupUnconfirmed`] while the connection's
+/// marker exists.
+fn refuse_unconfirmed(data_root: &Path, profile_id: Uuid) -> Result<(), ControlError> {
+    match unconfirmed_path(data_root, profile_id).try_exists() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(ControlError::ClaudeCodeCleanupUnconfirmed(profile_id)),
+        Err(error) => Err(ControlError::Io(error)),
+    }
+}
+
+/// The marker a turn whose tree was not observed ended leaves beside the
+/// connection's turn lock.
+fn unconfirmed_path(data_root: &Path, profile_id: Uuid) -> PathBuf {
+    data_root
+        .join(RUNTIME_PARENT)
+        .join(format!("{}{UNCONFIRMED_SUFFIX}", profile_id.simple()))
 }
 
 /// The turn lock file of one connection, beside its runtime folder.

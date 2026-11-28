@@ -61,8 +61,20 @@ impl Watcher {
     /// [`ClaudeCodeFailure::Failed`] when the thread cannot start.
     pub(super) fn start(
         watch: ClaudeCodeWatch,
+        cursor: WatchCursor,
+        stop: CancelSignal,
+    ) -> Result<Self, ProviderError> {
+        Self::start_observed(watch, cursor, stop, WATCH_POLL, || {})
+    }
+
+    /// [`Self::start`], polling every `poll` and calling `polled` after each
+    /// check of the loop, so a test can order a change after a poll.
+    fn start_observed(
+        watch: ClaudeCodeWatch,
         mut cursor: WatchCursor,
         stop: CancelSignal,
+        poll: Duration,
+        mut polled: impl FnMut() + Send + 'static,
     ) -> Result<Self, ProviderError> {
         let done = Arc::new(AtomicBool::new(false));
         let withdrawn = Arc::new(AtomicBool::new(false));
@@ -81,7 +93,8 @@ impl Watcher {
                             stop.cancel();
                             return;
                         }
-                        thread::park_timeout(WATCH_POLL);
+                        polled();
+                        thread::park_timeout(poll);
                     }
                     // A state recorded after the last poll still counts, so
                     // the turn's result is accepted only once every state up
@@ -122,5 +135,102 @@ impl Watcher {
 impl Drop for Watcher {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use omgcode_platform::process::CancelSignal;
+
+    use super::Watcher;
+    use crate::control::{ClaudeCodeDeclaration, ControlStore};
+
+    /// A withdrawal recorded after the watcher's last poll, which the loop
+    /// never checks because the watcher stops first, is still seen by the
+    /// check at the stop: the turn is withdrawn and its tree stopped.
+    #[test]
+    fn a_withdrawal_recorded_after_the_last_poll_is_seen_at_the_stop() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("data");
+        let root = directory.path().join("projects");
+        let tools = directory.path().join("tools");
+        let sign_in = directory.path().join("sign-in");
+        let relay = directory.path().join("relay");
+        for path in [&root, &tools, &sign_in, &relay] {
+            fs::create_dir(path).expect("scene folder");
+        }
+        let program = tools.join(if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        });
+        fs::write(&program, b"not a real program").expect("program");
+        let relay_program = relay.join(if cfg!(windows) {
+            "omgcode.exe"
+        } else {
+            "omgcode"
+        });
+        fs::write(&relay_program, b"not a real relay").expect("relay");
+        let mut store = ControlStore::open(&data).expect("store");
+        store
+            .set_development_root(&root, store.revision())
+            .expect("root");
+        store
+            .add_claude_code_profile(
+                &ClaudeCodeDeclaration {
+                    name: "claude".into(),
+                    program,
+                    config_folder: sign_in,
+                },
+                store.revision(),
+            )
+            .expect("profile");
+        if cfg!(windows) {
+            store
+                .grant_claude_code("claude", &relay, store.revision())
+                .expect("grants");
+        }
+        let watch = store
+            .resolve_claude_code("claude", &relay_program)
+            .expect("resolved")
+            .watch;
+        drop(store);
+
+        let tree = CancelSignal::new();
+        let (polled, polls) = mpsc::channel();
+        let cursor = watch.cursor();
+        // The loop polls once and then not again for an hour, so only the
+        // check at the stop can see the change below.
+        let mut watcher = Watcher::start_observed(
+            watch,
+            cursor,
+            tree.clone(),
+            Duration::from_secs(3600),
+            move || {
+                let _ = polled.send(());
+            },
+        )
+        .expect("watcher");
+        polls
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first poll allowed the turn");
+
+        let mut store = ControlStore::open(&data).expect("store");
+        if cfg!(windows) {
+            let revoked = store.revoke_claude_code_grants("claude").expect("revoked");
+            assert!(revoked.profile_deleted);
+        } else {
+            let _removed = store
+                .remove_provider_profile("claude", store.revision())
+                .expect("removed");
+        }
+        drop(store);
+        watcher.stop();
+        assert!(watcher.withdrawn(), "the change after the last poll");
+        assert!(tree.is_cancelled(), "the tree is stopped");
     }
 }

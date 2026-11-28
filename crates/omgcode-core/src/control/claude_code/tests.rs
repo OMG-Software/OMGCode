@@ -982,6 +982,51 @@ fn a_wait_succeeds_once_the_last_turn_ends_during_it() {
     assert!(holder.join().expect("holder"), "released after contention");
 }
 
+/// A turn whose tree was not observed ended leaves a marker that fails every
+/// wait, also once its lock is gone, as after its host exited, until the
+/// operator acknowledges it. Acknowledging is refused while a turn holds the
+/// lock. A marker fails a wait even where no turn lock was ever made.
+#[test]
+fn an_unconfirmed_turn_end_fails_every_wait_until_acknowledged() {
+    let scene = Scene::new();
+    let (profile_id, _, watch) = resolved_turn(&scene);
+    let short = std::time::Duration::from_millis(200);
+    let turn = watch.lock_turn().expect("lock").expect("free");
+    watch.record_unconfirmed_cleanup().expect("marker");
+    assert!(matches!(
+        wait_for_claude_code_turns(&scene.data, profile_id, short),
+        Err(ControlError::ClaudeCodeTurnsRunning)
+    ));
+    assert!(
+        matches!(
+            acknowledge_claude_code_cleanup(&scene.data, profile_id),
+            Err(ControlError::ClaudeCodeTurnsRunning)
+        ),
+        "refused while a turn holds the lock"
+    );
+    drop(turn);
+    assert!(matches!(
+        wait_for_claude_code_turns(&scene.data, profile_id, short),
+        Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == profile_id
+    ));
+    assert!(acknowledge_claude_code_cleanup(&scene.data, profile_id).expect("acknowledged"));
+    wait_for_claude_code_turns(&scene.data, profile_id, short).expect("acknowledged");
+    assert!(
+        !acknowledge_claude_code_cleanup(&scene.data, profile_id).expect("again"),
+        "nothing is left to acknowledge"
+    );
+
+    let unlocked = Uuid::new_v4();
+    ClaudeCodeWatch::for_tests(scene.data.clone(), unlocked)
+        .record_unconfirmed_cleanup()
+        .expect("marker");
+    assert!(matches!(
+        wait_for_claude_code_turns(&scene.data, unlocked, short),
+        Err(ControlError::ClaudeCodeCleanupUnconfirmed(id)) if id == unlocked
+    ));
+    assert!(acknowledge_claude_code_cleanup(&scene.data, unlocked).expect("acknowledged"));
+}
+
 #[cfg(not(windows))]
 #[test]
 fn other_platforms_refuse_claude_code_grants_without_recording_them() {
@@ -1293,5 +1338,55 @@ mod windows {
             Some(profile.id()),
             "the earlier withdrawal still counts"
         );
+    }
+
+    /// A granted sign-in folder that moved keeps every scope unproven and
+    /// can be neither revoked nor removed. Once the same folder is back at
+    /// its recorded path, revocation and then removal recover the settings.
+    #[test]
+    fn a_moved_granted_sign_in_folder_recovers_once_restored() {
+        let scene = Scene::new();
+        let mut store = scene.store();
+        let profile = store
+            .add_claude_code_profile(&scene.declaration("claude"), store.revision())
+            .expect("profile");
+        store
+            .grant_claude_code("claude", &scene.relay, store.revision())
+            .expect("grants");
+        let apart = scene.data.with_file_name("apart");
+        fs::create_dir(&apart).expect("separate root");
+        let moved = scene.sign_in.with_file_name("claude-sign-in-moved");
+        fs::rename(&scene.sign_in, &moved).expect("move the folder");
+
+        assert!(matches!(
+            store.set_development_root(&apart, store.revision()),
+            Err(ControlError::GrantRefused(reason))
+                if reason.starts_with("a Claude Code connection's sign-in folder changed since it was recorded")
+        ));
+        assert!(matches!(
+            store.remove_provider_profile("claude", store.revision()),
+            Err(ControlError::ProviderRefused(_))
+        ));
+        let failure = store
+            .revoke_claude_code_grants("claude")
+            .expect_err("the recorded folder is not at its path");
+        assert_eq!(failure.withdrawn, Some(profile.id()), "{:?}", failure.error);
+
+        fs::rename(&moved, &scene.sign_in).expect("restore the folder");
+        let revoked = store
+            .revoke_claude_code_grants("claude")
+            .expect("revoked once restored");
+        assert!(revoked.profile_deleted);
+        let program_folder = scene.program.parent().expect("folder");
+        let runtime = claude_code_runtime_folder(&scene.data, profile.id());
+        for path in [program_folder, &scene.sign_in, &runtime, &scene.relay] {
+            assert_eq!(access(path, profile.id()), None, "{}", path.display());
+        }
+        let _ = store
+            .remove_provider_profile("claude", store.revision())
+            .expect("removed after revocation");
+        store
+            .set_development_root(&apart, store.revision())
+            .expect("the root changes once the record is gone");
     }
 }

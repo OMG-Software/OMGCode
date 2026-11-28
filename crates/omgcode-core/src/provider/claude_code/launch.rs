@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use omgcode_platform::container::ContainerName;
 use omgcode_platform::process::{
-    self as platform, CancelSignal, Confinement, NetworkAccess, ProcessLimits, ProcessSpec,
-    StreamingChild, TreeLimits, UnixSocketAccess,
+    self as platform, CancelSignal, Confinement, NetworkAccess, ProcessError, ProcessLimits,
+    ProcessSpec, StreamingChild, TreeLimits, UnixSocketAccess,
 };
 use serde_json::json;
 
@@ -246,6 +246,7 @@ impl ClaudeCodeClient {
         // early return drops it, and its `Drop` ends and joins them all.
         let mut session = Session::new(events, turn, self.config.request_timeout);
         session.turn_lock = Some(lock);
+        session.turn_watch = Some(self.config.watch.clone());
         let mcp_config = if tools.is_empty() {
             json!({ "mcpServers": {} })
         } else {
@@ -329,8 +330,16 @@ impl ClaudeCodeClient {
                 max_disk_bytes: None,
             }),
         };
-        let mut child = platform::spawn_confined_streaming(&spec, &confinement, &limits)
-            .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
+        let mut child = match platform::spawn_confined_streaming(&spec, &confinement, &limits) {
+            Ok(child) => child,
+            Err(error) => {
+                // A tree that started and could not be stopped is no child
+                // of the session, so the session records its end as
+                // unconfirmed itself.
+                session.unconfirmed |= matches!(error, ProcessError::CleanupUnconfirmed(_));
+                return Err(failure(ClaudeCodeFailure::Failed));
+            }
+        };
         let stdin = child.take_stdin();
         let stdout = child.take_stdout();
         let stop = child.cancel_signal();
@@ -558,6 +567,11 @@ pub(super) struct Session {
     /// The shared turn lock, held from before the launch until the tree and
     /// the workers ended, so a revocation's wait sees the process gone.
     turn_lock: Option<File>,
+    /// The connection the lock belongs to, which records an unconfirmed end.
+    turn_watch: Option<ClaudeCodeWatch>,
+    /// Whether a tree of this session was not observed ended, also one the
+    /// launch could not stop before the session owned it.
+    unconfirmed: bool,
     /// Ends the tree when the settings withdraw the connection.
     watcher: Option<Watcher>,
     /// Whether a stopped watcher had withdrawn the connection.
@@ -595,6 +609,8 @@ impl Session {
             text: String::new(),
             request_timeout,
             turn_lock: None,
+            turn_watch: None,
+            unconfirmed: false,
             watcher: None,
             withdrawn: false,
             turn,
@@ -1003,6 +1019,12 @@ impl Session {
     /// does not read on either platform, and ends the process tree. The
     /// tree's end closes the relay's side of the channel, which ends the
     /// write even when the shutdown request fails.
+    ///
+    /// A write counts as finished only once the writer records it in the
+    /// [`WriteRace`], after `write_all` and `flush` return. A write whose
+    /// bytes went out but that the watcher stopped first still fails the
+    /// turn, and its tree is ended: the relay may have the answer, but the
+    /// turn never reports one it did not record.
     fn write(
         &mut self,
         line: &[u8],
@@ -1018,45 +1040,20 @@ impl Session {
         let (Some(writer), Some(shutdown)) = (self.writer.as_mut(), shutdown) else {
             return Err(failure(ClaudeCodeFailure::Protocol));
         };
-        let race = WriteRace::new();
-        let (written, finished) = thread::scope(|scope| {
-            let race = &race;
-            let watcher = thread::Builder::new()
-                .name("claude-code-write".into())
-                .spawn_scoped(scope, move || {
-                    while race.running() {
-                        if cancel.is_cancelled() || Instant::now() >= deadline {
-                            // Only a write still running is stopped. The turn
-                            // fails then, so the tree ends now rather than
-                            // after the write returns: an ignored shutdown
-                            // failure cannot hold it.
-                            if race.stop() {
-                                let _ = shutdown.shutdown();
-                                if let Some(tree) = &tree {
-                                    tree.cancel();
-                                }
-                            }
-                            return;
-                        }
-                        thread::park_timeout(POLL);
-                    }
-                });
-            let Ok(watcher) = watcher else {
-                return Err(failure(ClaudeCodeFailure::Failed));
-            };
-            let written = writer.write_all(line).and_then(|()| writer.flush());
-            let finished = race.finish();
-            watcher.thread().unpark();
-            Ok((written, finished))
-        })?;
-        if !finished {
-            return Err(if cancel.is_cancelled() {
-                ProviderError::Cancelled
-            } else {
-                failure(ClaudeCodeFailure::Failed)
-            });
-        }
-        written.map_err(|_| failure(ClaudeCodeFailure::Protocol))
+        // The turn fails once the write is stopped, so the tree ends now
+        // rather than after the write returns: an ignored shutdown failure
+        // cannot hold it.
+        raced_write(
+            || writer.write_all(line).and_then(|()| writer.flush()),
+            cancel,
+            deadline,
+            move || {
+                let _ = shutdown.shutdown();
+                if let Some(tree) = &tree {
+                    tree.cancel();
+                }
+            },
+        )
     }
 
     /// End the run after its result: close the channel, let the process
@@ -1103,17 +1100,23 @@ impl Session {
     }
 
     /// Stop the watcher, then release the turn lock if the tree was
-    /// observed `ended`. The lock of a tree whose end was not confirmed is
-    /// kept until this process exits, so a revocation's wait reports the
-    /// turn as running instead of ended.
+    /// observed `ended`. For a tree whose end was not confirmed, the lock is
+    /// kept until this process exits and a marker that outlives it is
+    /// recorded, so a revocation's wait never reports that turn ended.
     fn release_turn(&mut self, ended: bool) {
         if let Some(mut watcher) = self.watcher.take() {
             watcher.stop();
             self.withdrawn |= watcher.withdrawn();
         }
+        self.unconfirmed |= !ended;
         if let Some(lock) = self.turn_lock.take()
-            && !ended
+            && self.unconfirmed
         {
+            // A marker that cannot be written leaves the held lock, which
+            // still fails every wait while this process runs.
+            if let Some(watch) = &self.turn_watch {
+                let _ = watch.record_unconfirmed_cleanup();
+            }
             UNCONFIRMED_TURNS
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -1161,8 +1164,61 @@ impl Drop for Session {
 }
 
 /// The turn locks of trees whose end could not be confirmed. They stay held
-/// until this process exits, so no revocation reports those turns ended.
+/// until this process exits, so no revocation reports those turns ended; the
+/// marker each one recorded keeps failing revocations after that.
 static UNCONFIRMED_TURNS: Mutex<Vec<File>> = Mutex::new(Vec::new());
+
+/// Run `write` on this thread while a watcher calls `stop`, once, when
+/// `cancel` is set or `deadline` passes before the write is recorded
+/// finished. The write is recorded finished after `write` returns, so one
+/// whose bytes went out but that is recorded only after the stop still fails.
+///
+/// # Errors
+///
+/// [`ProviderError::Cancelled`] or [`ClaudeCodeFailure::Failed`] when the
+/// watcher stopped the write first, [`ClaudeCodeFailure::Failed`] when the
+/// watcher cannot start, and [`ClaudeCodeFailure::Protocol`] when `write`
+/// failed.
+fn raced_write(
+    write: impl FnOnce() -> io::Result<()>,
+    cancel: &CancelToken,
+    deadline: Instant,
+    stop: impl FnOnce() + Send,
+) -> Result<(), ProviderError> {
+    let race = WriteRace::new();
+    let (written, finished) = thread::scope(|scope| {
+        let race = &race;
+        let watcher = thread::Builder::new()
+            .name("claude-code-write".into())
+            .spawn_scoped(scope, move || {
+                while race.running() {
+                    if cancel.is_cancelled() || Instant::now() >= deadline {
+                        // Only a write still running is stopped.
+                        if race.stop() {
+                            stop();
+                        }
+                        return;
+                    }
+                    thread::park_timeout(POLL);
+                }
+            });
+        let Ok(watcher) = watcher else {
+            return Err(failure(ClaudeCodeFailure::Failed));
+        };
+        let written = write();
+        let finished = race.finish();
+        watcher.thread().unpark();
+        Ok((written, finished))
+    })?;
+    if !finished {
+        return Err(if cancel.is_cancelled() {
+            ProviderError::Cancelled
+        } else {
+            failure(ClaudeCodeFailure::Failed)
+        });
+    }
+    written.map_err(|_| failure(ClaudeCodeFailure::Protocol))
+}
 
 /// Which of a relay write and its watcher ended the write: the writer by
 /// finishing it, or the watcher by stopping it. The first to record wins,

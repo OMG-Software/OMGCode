@@ -48,8 +48,8 @@ pub use assignment::{
 pub use claude_code::{
     CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole,
     ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeRevokeFailure,
-    ClaudeCodeSetup, ClaudeCodeWatch, claude_code_container, claude_code_runtime_folder,
-    wait_for_claude_code_turns,
+    ClaudeCodeSetup, ClaudeCodeWatch, acknowledge_claude_code_cleanup, claude_code_container,
+    claude_code_runtime_folder, wait_for_claude_code_turns,
 };
 pub(crate) use claude_code::{Recheck, WatchCursor};
 pub use container::{
@@ -205,6 +205,14 @@ pub enum ControlError {
         CLAUDE_CODE_TURN_STOP_WAIT.as_secs()
     )]
     ClaudeCodeTurnsRunning,
+    /// A turn of the Claude Code connection with this profile identifier
+    /// ended without its process tree being observed ended, so its
+    /// processes may remain. Every wait for the connection's turns fails
+    /// until the operator acknowledges it.
+    #[error(
+        "the change is recorded, but a Claude Code turn of this connection ended without its process tree being observed ended; check that no `claude` process of the connection remains, then run `workspace claude-code-acknowledge {0}`"
+    )]
+    ClaudeCodeCleanupUnconfirmed(uuid::Uuid),
 }
 
 impl From<StorageError> for ControlError {

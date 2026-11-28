@@ -877,7 +877,7 @@ impl ControlStore {
             };
             if !setup.config_folder.is_current()? {
                 return Err(ControlError::GrantRefused(
-                    "a Claude Code connection's sign-in folder changed since it was recorded; remove that connection with `workspace provider-profile-remove` first",
+                    "a Claude Code connection's sign-in folder changed since it was recorded; remove that connection with `workspace provider-profile-remove` first, and where it has grants, restore the folder to its recorded path and run `workspace claude-code-revoke` before that",
                 ));
             }
             if directory.contains(&setup.config_folder)?
@@ -1087,7 +1087,10 @@ fn transition(
 
 mod turns;
 
-pub use turns::{CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeWatch, wait_for_claude_code_turns};
+pub use turns::{
+    CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeWatch, acknowledge_claude_code_cleanup,
+    wait_for_claude_code_turns,
+};
 pub(crate) use turns::{Recheck, WatchCursor};
 
 #[cfg(test)]
