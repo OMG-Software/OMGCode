@@ -24,6 +24,7 @@ use crate::workspace::DirectoryRecord;
 
 mod approval;
 mod assignment;
+mod claude_code;
 mod container;
 mod credential;
 mod package;
@@ -43,6 +44,10 @@ pub use approval::{
 pub use assignment::{
     AssignmentFailure, FolderGrant, PlannedFolder, ProfileAccessPlan, ProfileAssignment,
     RegisteredWorkspace, Revocations, SkippedGrant, Unregistration,
+};
+pub use claude_code::{
+    ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole, ClaudeCodeGrantStatus,
+    ClaudeCodeRevocation, ClaudeCodeSetup, claude_code_container, claude_code_runtime_folder,
 };
 pub use container::{
     ContainerGrant, ContainerGrantAccess, ContainerGrantState, ContainerGrantStatus,
@@ -277,6 +282,10 @@ pub struct ControlSnapshot {
     configuration_only: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     container_grants: Vec<ContainerGrantStatus>,
+    /// Grants to Claude Code connection containers (ADR-0109), apart from
+    /// workspace grants because they belong to a provider profile.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    claude_code_grants: Vec<ClaudeCodeGrantStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     profiles: Vec<ProfileStatus>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -455,6 +464,20 @@ enum Action {
         grant_id: Uuid,
     },
     ContainerGrantRevoked {
+        grant_id: Uuid,
+    },
+    /// The intent to grant a Claude Code connection's container one folder
+    /// (ADR-0109), synced before the ACL change.
+    ClaudeCodeGrantRequested {
+        grant: ClaudeCodeGrant,
+    },
+    ClaudeCodeGrantApplied {
+        grant_id: Uuid,
+    },
+    ClaudeCodeRevokeRequested {
+        grant_id: Uuid,
+    },
+    ClaudeCodeGrantRevoked {
         grant_id: Uuid,
     },
     ProfileAdded {
@@ -870,6 +893,7 @@ impl ControlStore {
                 workspaces: Vec::new(),
                 configuration_only: true,
                 container_grants: Vec::new(),
+                claude_code_grants: Vec::new(),
                 profiles: Vec::new(),
                 package_profiles: Vec::new(),
                 package_cache_roots: Vec::new(),
@@ -1586,6 +1610,9 @@ impl ControlStore {
                 | Action::ContainerGrantApplied { .. }
                 | Action::ContainerRevokeRequested { .. }
                 | Action::ContainerGrantRevoked { .. }
+                | Action::ClaudeCodeGrantApplied { .. }
+                | Action::ClaudeCodeRevokeRequested { .. }
+                | Action::ClaudeCodeGrantRevoked { .. }
                 | Action::PackageFetchStarted { .. }
                 | Action::PackageFetchFinished { .. }
                 | Action::ApprovalRequested { .. }
@@ -1708,6 +1735,10 @@ impl ControlStore {
             | Action::ContainerGrantApplied { .. }
             | Action::ContainerRevokeRequested { .. }
             | Action::ContainerGrantRevoked { .. } => container::apply(state, &entry.action)?,
+            Action::ClaudeCodeGrantRequested { .. }
+            | Action::ClaudeCodeGrantApplied { .. }
+            | Action::ClaudeCodeRevokeRequested { .. }
+            | Action::ClaudeCodeGrantRevoked { .. } => claude_code::apply(state, &entry.action)?,
             Action::ProfileAdded { .. } | Action::ProfileRemoved { .. } => {
                 profile::apply(state, &entry.action, revision)?;
             }
