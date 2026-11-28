@@ -45,6 +45,7 @@ fn main() -> ExitCode {
     match arguments.get(1).and_then(|argument| argument.to_str()) {
         Some("-p") => return fake_claude::run(&arguments),
         Some(command) if command == RELAY_SUBCOMMAND => return fake_relay(&arguments),
+        Some(fake_claude::LINGER_SUBCOMMAND) => return fake_claude::linger(&arguments),
         _ => {}
     }
     let filter = arguments
@@ -221,16 +222,18 @@ fn supervise(arguments: &[OsString], filter: Option<&str>) -> ExitCode {
     }
 }
 
-/// The supervisor's own test: a copy that ends while its turn's fake and
-/// relay run, its writes blocked, leaves nothing once cleaned up.
+/// The supervisor's own test: a copy that ends while its turn's fake, its
+/// relay, and a linger run, its writes blocked, leaves nothing once
+/// cleaned up. The linger outlives the copy on Linux, so only the scope's
+/// stop ends it there.
 fn supervisor_test() -> Result<(), String> {
     let (status, cleaned) = supervised_copy(1, &[OsString::from(ABANDON_ARGUMENT)])?;
     if status.code() != Some(i32::from(ABANDONED_EXIT)) {
         return Err(format!("the copy did not abandon its turn: {status}"));
     }
-    if cleaned.scenes != 1 || cleaned.ended != 2 {
+    if cleaned.scenes != 1 || cleaned.ended != 3 {
         return Err(format!(
-            "{} scenes left, {} processes seen ended; expected 1 and 2",
+            "{} scenes left, {} processes seen ended; expected 1 and 3",
             cleaned.scenes, cleaned.ended
         ));
     }
@@ -291,10 +294,12 @@ fn copy_command(program: &Path, _scope: &str) -> Command {
 ///
 /// On Windows the kernel ends a copy's process trees when the copy exits,
 /// because each tree's job ends when its last handle closes. On Linux the
-/// copy's exit ends the fake but not its relay, so the copy's scope is
-/// stopped, which ends every process left in it. Either way an end counts
-/// only once each fake's and relay's alive lock is seen free, and a folder
-/// whose processes were not seen to end is kept and named.
+/// copy's exit ends the fake (`PR_SET_PDEATHSIG`) and, through its closed
+/// pipes, the relay, but nothing ends a descendant that ignores them, so
+/// the copy's scope is stopped, which ends every process left in it.
+/// Either way an end counts only once each fake's, relay's, and linger's
+/// alive lock is seen free, and a folder whose processes were not seen to
+/// end is kept and named.
 fn clean_up_after(folder: TempDir, scope: &str) -> Result<Cleaned, String> {
     #[cfg(target_os = "linux")]
     stop_scope(scope)?;
@@ -398,21 +403,25 @@ fn revoke_left_connection(
 }
 
 /// In a supervised copy, for the supervisor's own test: start a turn whose
-/// reply write blocks and, once both the fake and its relay were seen
-/// running, end the copy as [`abandon`] does, with the turn, its process
-/// tree, and the scene's fixtures left behind.
+/// reply write blocks and whose fake starts a linger and, once the fake,
+/// its relay, and the linger were seen running, end the copy as
+/// [`abandon`] does, with the turn, its process tree, and the scene's
+/// fixtures left behind.
 fn abandon_one_turn() -> ExitCode {
     let scene = Scene::new();
-    let flood = start_flood(&scene, CancelToken::new());
+    let flood = start_flood(&scene, CancelToken::new(), "SCENARIO:flood-linger");
     let until = Instant::now() + Duration::from_secs(60);
     while Instant::now() < until && !flood.turn.is_finished() {
-        if fake_claude::stalled(&scene.sign_in) && fake_claude::processes_running(&scene.sign_in) {
+        if fake_claude::stalled(&scene.sign_in)
+            && fake_claude::processes_running(&scene.sign_in)
+            && fake_claude::linger_running(&scene.sign_in)
+        {
             end_test_process("the supervisor's own test abandons its turn");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     eprintln!(
-        "the turn never stalled with both processes running; {}",
+        "the turn never stalled with its fake, relay, and linger running; {}",
         fake_claude::diagnosis(&scene.sign_in)
     );
     ExitCode::FAILURE
@@ -994,8 +1003,8 @@ struct FloodStart {
 
 /// Start, on its own thread, a turn whose fake floods the relay with
 /// requests and reads none of the replies, so OMGCode's write of a reply
-/// blocks.
-fn start_flood(scene: &Scene, cancel: CancelToken) -> FloodStart {
+/// blocks. `prompt` names the flood scenario.
+fn start_flood(scene: &Scene, cancel: CancelToken, prompt: &'static str) -> FloodStart {
     let client = scene.client();
     let (data, workspace, workspace_id) = (
         scene.data.clone(),
@@ -1015,7 +1024,7 @@ fn start_flood(scene: &Scene, cancel: CancelToken) -> FloodStart {
         let outcome = TurnRuntime::new(&mut journal, &data, workspace_id, TurnLimits::default())
             .expect("runtime")
             .with_cancel_token(cancel)
-            .run(&mut model, "SCENARIO:flood", "", manifest());
+            .run(&mut model, prompt, "", manifest());
         assert!(outcome.is_err(), "a flooded turn cannot finish");
         (
             matches!(outcome, Err(TurnError::Cancelled)),
@@ -1049,7 +1058,7 @@ fn flood_turn(
         turn,
         thread: turn_thread,
         started,
-    } = start_flood(scene, cancel);
+    } = start_flood(scene, cancel, "SCENARIO:flood");
     let mut seen_running = false;
     let mut seen_blocked = turn_thread.as_ref().map(|_| false);
     let mut cancelled_at = None;

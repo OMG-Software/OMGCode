@@ -213,6 +213,12 @@ const FAKE_ALIVE_FILE: &str = "fake-alive.lock";
 pub const RELAY_ALIVE_FILE: &str = "relay-alive.lock";
 /// The variable that names the folder for the relay's file.
 pub const ALIVE_FOLDER_VARIABLE: &str = "FAKE_CLAUDE_ALIVE_FOLDER";
+/// Locked by a linger for as long as it runs.
+const LINGER_ALIVE_FILE: &str = "linger-alive.lock";
+/// The relay program's subcommand that runs a linger ([`linger`]).
+pub const LINGER_SUBCOMMAND: &str = "linger";
+/// How long a linger runs when nothing ends it.
+const LINGER_BOUND: Duration = Duration::from_secs(300);
 
 impl Drop for McpClient {
     fn drop(&mut self) {
@@ -295,8 +301,8 @@ pub fn processes_ended(sign_in: &Path, limit: Duration) -> Result<(), String> {
     Ok(())
 }
 
-/// Wait up to `limit` for every fake and relay that left its alive file in
-/// `sign_in` to end, and count the files seen free. A missing file means
+/// Wait up to `limit` for every fake, relay, and linger that left its alive
+/// file in `sign_in` to end, and count the files seen free. A missing file means
 /// that process never made it, so nothing of it is left to observe.
 ///
 /// # Errors
@@ -306,7 +312,7 @@ pub fn processes_ended(sign_in: &Path, limit: Duration) -> Result<(), String> {
 pub fn alive_ended(sign_in: &Path, limit: Duration) -> Result<usize, String> {
     let until = Instant::now() + limit;
     let mut ended = 0;
-    for name in [FAKE_ALIVE_FILE, RELAY_ALIVE_FILE] {
+    for name in [FAKE_ALIVE_FILE, RELAY_ALIVE_FILE, LINGER_ALIVE_FILE] {
         let file = match fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -345,6 +351,57 @@ pub fn processes_running(sign_in: &Path) -> bool {
     })
 }
 
+/// Whether a linger started for `sign_in` holds its alive lock now.
+#[allow(dead_code, reason = "only the core process tests start a linger")]
+#[must_use]
+pub fn linger_running(sign_in: &Path) -> bool {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(sign_in.join(LINGER_ALIVE_FILE))
+        .is_ok_and(|file| matches!(file.try_lock(), Err(fs::TryLockError::WouldBlock)))
+}
+
+/// Run as a linger, a descendant that outlives the end of the fake that
+/// started it, as one that ignores its closed pipes would: hold the
+/// linger's alive lock in the folder named by `arguments[2]`, then sleep
+/// for [`LINGER_BOUND`], so one that nothing ends still ends.
+#[allow(dead_code, reason = "only the core process tests start a linger")]
+pub fn linger(arguments: &[OsString]) -> ExitCode {
+    let Some(folder) = arguments.get(2) else {
+        return ExitCode::FAILURE;
+    };
+    hold_alive(Path::new(folder), LINGER_ALIVE_FILE);
+    std::thread::sleep(LINGER_BOUND);
+    ExitCode::SUCCESS
+}
+
+/// Start a linger ([`linger`]) with the relay's program, which is the test
+/// binary, and leave it running. Its standard streams are pipes that this
+/// fake drops, not the null device, which the Windows CI runner's
+/// AppContainer refused.
+#[allow(
+    clippy::zombie_processes,
+    reason = "the linger must outlive this fake, which never waits for it"
+)]
+fn start_linger(server: &Value, folder: &Path) {
+    let mut builder = Command::new(server["command"].as_str().expect("command"));
+    builder
+        .arg(LINGER_SUBCOMMAND)
+        .arg(folder)
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for name in ["SystemRoot", "windir", "LOCALAPPDATA"] {
+        if let Some(value) = env::var_os(name) {
+            builder.env(name, value);
+        }
+    }
+    // Dropping the handle neither waits for the process nor ends it.
+    drop(builder.spawn().expect("linger"));
+}
+
 /// Whether a fake started for this sign-in folder since its marks were last
 /// forgotten.
 #[allow(dead_code, reason = "only the core process tests check for no start")]
@@ -379,6 +436,7 @@ pub fn forget_runs(sign_in: &Path) {
         FLOOD_FAILED_FILE,
         FAKE_ALIVE_FILE,
         RELAY_ALIVE_FILE,
+        LINGER_ALIVE_FILE,
     ] {
         match fs::remove_file(sign_in.join(name)) {
             Ok(()) => {}
@@ -609,11 +667,17 @@ pub fn run(arguments: &[OsString]) -> ExitCode {
             );
             emit(&mut output, &result("Not logged in", true));
         }
-        "flood" => {
-            let (Some(client), Some(folder)) = (client.as_mut(), env::var_os("CLAUDE_CONFIG_DIR"))
-            else {
+        "flood" | "flood-linger" => {
+            let (Some(client), Some(server), Some(folder)) = (
+                client.as_mut(),
+                server.as_ref(),
+                env::var_os("CLAUDE_CONFIG_DIR"),
+            ) else {
                 return ExitCode::FAILURE;
             };
+            if scenario == "flood-linger" {
+                start_linger(server, Path::new(&folder));
+            }
             client.flood(Path::new(&folder));
         }
         "hang" => {

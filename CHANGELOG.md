@@ -105,7 +105,8 @@ Changes are recorded here before a release version is assigned.
   real grants, through the core runtime and the CLI commands. The core one
   runs its tests in a supervised copy of itself; when a test ends that copy
   with a turn still running, the supervisor stops what it left, observes
-  the fake's and relay's ends, deletes the connection's container profile,
+  the ends of the fake, its relay, and a descendant that ignores its closed
+  pipes, deletes the connection's container profile,
   and removes the fixtures, which its own test checks. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain
   variants. Both binaries also passed on Linux under WSL 2 in a delegated

@@ -62,12 +62,16 @@ on Linux in its own delegated scope, with every temporary folder inside one
 folder of the supervising process. A test whose turn does not end even
 after its cancellation ends that copy, and no drop of the copy runs. The
 supervisor then stops what the copy left running: the copy's scope on
-Linux, while on Windows each tree's job ends with the copy. It waits until
-every fake's and relay's alive lock is free, revokes each connection left
+Linux, where the copy's exit ends the fake and, through its closed pipes,
+the relay but no descendant that ignores them, while on Windows each tree's
+job ends with the copy. It waits until every fake's, relay's, and linger's
+alive lock is free, revokes each connection left
 behind, which deletes its AppContainer profile, and removes the folder. A
 scene whose processes were not seen to end is kept and named.
 `a_supervisor_stops_and_cleans_up_after_an_abandoned_turn` makes a copy end
-while its turn's fake and relay run and checks that path.
+while its turn's fake, relay, and a linger run and checks that path. The
+linger is a descendant of the fake that ignores its closed pipes and ends
+itself only after five minutes, so on Linux only the scope's stop ends it.
 
 The `toolchain_acceptance` tests run real toolchains. They are
 `#[ignore]` because they need host toolchains named by `OMGCODE_ACCEPT_*`
