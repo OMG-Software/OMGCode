@@ -71,6 +71,10 @@ pub const MAX_TREE_DISK_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 
 /// Poll interval for exit, deadline, and cancellation checks.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Longest a streaming run's final disk accounting may take after its tree is
+/// empty: one in-flight sample that the sampler's stop waits for, then the
+/// final measurement, each limited to the disk scan's 30 second bound.
+const DISK_ACCOUNTING_BOUND: Duration = Duration::from_secs(60);
 /// Extra time [`StreamingChild`] allows its supervisor to settle beyond two
 /// cleanup timeouts, one for the tree and one for the standard-error reader.
 const SUPERVISOR_SLACK: Duration = Duration::from_secs(1);
@@ -208,6 +212,16 @@ impl ProcessLimits {
     ///
     /// Returns [`ProcessError::InvalidLimits`] for a value out of range.
     pub fn validate(self) -> Result<Self, ProcessError> {
+        self.validate_captures(true)
+    }
+
+    /// The check [`spawn_confined_streaming`] makes: it retains no standard
+    /// output, so `max_stdout_bytes` is not range-checked.
+    fn validate_streaming(self) -> Result<Self, ProcessError> {
+        self.validate_captures(false)
+    }
+
+    fn validate_captures(self, check_stdout: bool) -> Result<Self, ProcessError> {
         if self.deadline.is_zero() || self.deadline > MAX_DEADLINE {
             return Err(ProcessError::InvalidLimits("deadline is out of range"));
         }
@@ -216,7 +230,9 @@ impl ProcessLimits {
                 "cleanup timeout is out of range",
             ));
         }
-        if self.max_stdout_bytes > MAX_CAPTURE_BYTES || self.max_stderr_bytes > MAX_CAPTURE_BYTES {
+        if (check_stdout && self.max_stdout_bytes > MAX_CAPTURE_BYTES)
+            || self.max_stderr_bytes > MAX_CAPTURE_BYTES
+        {
             return Err(ProcessError::InvalidLimits(
                 "output capture limit is too large",
             ));
@@ -318,11 +334,46 @@ pub enum ProcessError {
     /// observed it empty before returning this error.
     Supervision(io::Error),
     /// The runner could not observe the tree empty, or its output closed,
-    /// within the cleanup timeout. Processes may remain.
-    CleanupUnconfirmed(&'static str),
+    /// within the cleanup timeout, or it failed to terminate or check the tree
+    /// before it saw it empty. Processes may remain.
+    CleanupUnconfirmed(UnconfirmedCleanup),
     /// A disk limit could not be prepared or its sampler could not start.
     /// Nothing was started.
     DiskMeasurement(io::Error),
+}
+
+/// Why a tree was not observed empty: a fixed reason and, when a native call
+/// failed before the tree was seen empty, that call's error.
+#[derive(Debug)]
+pub struct UnconfirmedCleanup {
+    reason: &'static str,
+    cause: Option<io::Error>,
+}
+
+impl UnconfirmedCleanup {
+    fn new(reason: &'static str) -> Self {
+        Self {
+            reason,
+            cause: None,
+        }
+    }
+
+    fn caused_by(reason: &'static str, cause: io::Error) -> Self {
+        Self {
+            reason,
+            cause: Some(cause),
+        }
+    }
+
+    /// The fixed reason cleanup was not confirmed.
+    pub fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// The native failure behind the reason, when there was one.
+    pub fn cause(&self) -> Option<&io::Error> {
+        self.cause.as_ref()
+    }
 }
 
 impl fmt::Display for ProcessError {
@@ -352,11 +403,16 @@ impl fmt::Display for ProcessError {
             }
             Self::Spawn(error) => write!(formatter, "the program could not be started: {error}"),
             Self::Supervision(error) => write!(formatter, "process supervision failed: {error}"),
-            Self::CleanupUnconfirmed(reason) => {
+            Self::CleanupUnconfirmed(cleanup) => {
                 write!(
                     formatter,
-                    "process tree cleanup was not confirmed: {reason}"
-                )
+                    "process tree cleanup was not confirmed: {}",
+                    cleanup.reason
+                )?;
+                match &cleanup.cause {
+                    Some(cause) => write!(formatter, ": {cause}"),
+                    None => Ok(()),
+                }
             }
             Self::DiskMeasurement(error) => {
                 write!(formatter, "the disk limit could not be applied: {error}")
@@ -372,6 +428,10 @@ impl std::error::Error for ProcessError {
             | Self::Supervision(error)
             | Self::Confinement(error)
             | Self::DiskMeasurement(error) => Some(error),
+            Self::CleanupUnconfirmed(cleanup) => cleanup
+                .cause
+                .as_ref()
+                .map(|cause| cause as &(dyn std::error::Error + 'static)),
             _ => None,
         }
     }
@@ -490,7 +550,7 @@ pub fn spawn_confined_streaming(
     confinement: &Confinement,
     limits: &ProcessLimits,
 ) -> Result<StreamingChild, ProcessError> {
-    let limits = limits.validate()?;
+    let limits = limits.validate_streaming()?;
     validate_spec(spec)?;
     confinement.validate()?;
     let disk = DiskMonitor::prepare(
@@ -760,7 +820,7 @@ fn receive(
         Ok(Ok(output)) => Ok(output),
         Ok(Err(error)) => Err(ProcessError::Supervision(error)),
         Err(RecvTimeoutError::Timeout) => Err(ProcessError::CleanupUnconfirmed(
-            "an output stream stayed open after the tree was empty",
+            UnconfirmedCleanup::new("an output stream stayed open after the tree was empty"),
         )),
         Err(RecvTimeoutError::Disconnected) => Err(ProcessError::Supervision(io::Error::other(
             "an output reader stopped without a result",
@@ -779,7 +839,7 @@ fn supervise(
     mut disk: Option<DiskMonitor>,
 ) -> Result<ProcessOutcome, ProcessError> {
     let watched = watch(tree, started, limits.deadline, cancel, disk.as_ref());
-    let settled = settle(tree, watched, started, limits, disk.take())?;
+    let settled = settle(tree, watched, started, limits, disk.take(), || {})?;
     let (stdout, stderr) = capture.finish(Instant::now() + limits.cleanup_timeout)?;
     Ok(ProcessOutcome {
         termination: settled.termination,
@@ -799,16 +859,22 @@ struct Settled {
 }
 
 /// Stop the tree after [`watch`] returned, observe it empty, read its usage,
-/// release its native state, and take the final disk sample.
+/// release its native state, and take the final disk sample. `on_empty` runs
+/// once, as soon as the tree is observed empty and before the usage and disk
+/// accounting, so a waiter can bound those separately from the cleanup.
 fn settle(
     tree: &mut impl ProcessTree,
     watched: io::Result<Termination>,
     started: Instant,
     limits: ProcessLimits,
     mut disk: Option<DiskMonitor>,
+    on_empty: impl FnOnce(),
 ) -> Result<Settled, ProcessError> {
     // Descendants never outlive the run, including after a normal exit.
     let stopped = stop_tree(tree, limits.cleanup_timeout);
+    if stopped.is_ok() {
+        on_empty();
+    }
     let mut termination = match (watched, stopped) {
         (Ok(termination), Ok(())) => termination,
         (_, Err(error)) => return Err(error),
@@ -883,17 +949,32 @@ fn watch(
 }
 
 /// Terminate the tree until it is observed empty or the timeout elapses.
+///
+/// `Ok` means the tree was positively observed empty. Any failure before that
+/// observation, including a failed termination or emptiness check, is
+/// [`ProcessError::CleanupUnconfirmed`] with the native cause: processes may
+/// remain, so the tree's drop fallback must still kill it.
 fn stop_tree(tree: &mut impl ProcessTree, timeout: Duration) -> Result<(), ProcessError> {
     let until = Instant::now() + timeout;
     loop {
-        tree.terminate().map_err(ProcessError::Supervision)?;
-        if tree.is_empty().map_err(ProcessError::Supervision)? {
+        tree.terminate().map_err(|cause| {
+            ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::caused_by(
+                "the tree could not be terminated",
+                cause,
+            ))
+        })?;
+        if tree.is_empty().map_err(|cause| {
+            ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::caused_by(
+                "the tree could not be checked for remaining processes",
+                cause,
+            ))
+        })? {
             return Ok(());
         }
         if Instant::now() >= until {
-            return Err(ProcessError::CleanupUnconfirmed(
+            return Err(ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::new(
                 "processes remained after termination",
-            ));
+            )));
         }
         thread::sleep(POLL_INTERVAL);
     }

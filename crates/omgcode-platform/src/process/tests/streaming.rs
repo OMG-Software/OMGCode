@@ -6,10 +6,10 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::super::{
@@ -61,16 +61,24 @@ fn start(scene: &Scene, mode: &str, limits: &ProcessLimits) -> StreamingChild {
 /// Forward the child's stdout lines from a helper thread, so a test never
 /// blocks on a read. The channel closes when the pipe reaches end of file.
 fn lines(output: ChildOutput) -> Receiver<String> {
+    lines_with_handle(output).1
+}
+
+/// [`lines`] plus the reader thread's handle. The thread returns `Ok` only
+/// when the pipe reached end of file; a read error is its `Err`, so a closed
+/// channel can be told apart from a failed read.
+fn lines_with_handle(output: ChildOutput) -> (JoinHandle<io::Result<()>>, Receiver<String>) {
     let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
+    let handle = thread::spawn(move || {
         for line in BufReader::new(output).lines() {
-            let Ok(line) = line else { return };
-            if sender.send(line).is_err() {
-                return;
+            if sender.send(line?).is_err() {
+                // The test stopped listening; nothing more to read for it.
+                return Ok(());
             }
         }
+        Ok(())
     });
-    receiver
+    (handle, receiver)
 }
 
 /// Wait for exactly `wanted`, skipping other lines such as the test harness's
@@ -162,19 +170,29 @@ fn cancelling_terminates_the_tree_and_ends_stdout() {
     let mut child = start(&scene, "ready-sleep", &limits());
     let pid = recorded_pid(&scene);
     let guard = KillOnDrop(pid);
-    let reader = lines(child.take_stdout().expect("stdout"));
+    let (reader_thread, reader) = lines_with_handle(child.take_stdout().expect("stdout"));
     child.cancel_signal().cancel();
     wait_until_ended(&child);
     let outcome = child.finish(Duration::from_secs(5)).expect("finish");
     assert_eq!(outcome.termination, Termination::Cancelled);
     assert!(exits_within(pid, Duration::from_secs(5)), "{pid} survived");
-    // The pipe reaches end of file once the tree is gone.
+    // The pipe reaches end of file once the tree is gone. A disconnected
+    // channel counts as end of file only if the reader thread ended without a
+    // read error.
     let until = Instant::now() + PATIENCE;
     while reader.recv_timeout(Duration::from_millis(50))
         != Err(mpsc::RecvTimeoutError::Disconnected)
     {
         assert!(Instant::now() < until, "stdout never reached end of file");
     }
+    while !reader_thread.is_finished() {
+        assert!(Instant::now() < until, "the stdout reader never finished");
+        thread::sleep(Duration::from_millis(10));
+    }
+    reader_thread
+        .join()
+        .expect("the stdout reader panicked")
+        .expect("stdout ended with a read error, not end of file");
     drop(guard);
 }
 
@@ -313,4 +331,80 @@ fn a_streaming_start_with_a_bad_specification_starts_nothing() {
     let error = spawn_confined_streaming(&spec, &confinement(&scene), &limits())
         .expect_err("relative program");
     assert!(matches!(error, ProcessError::InvalidSpec(_)), "{error}");
+}
+
+#[test]
+fn a_streaming_start_ignores_the_stdout_limit_but_checks_the_stderr_limit() {
+    let scene = Scene::new();
+    let record = scene.workspace.join("record.txt");
+    let spec = fixture(&scene, "ready-sleep", &record);
+    // Standard output is read by the caller, so its capture limit is unused.
+    let mut oversized_stdout = limits();
+    oversized_stdout.max_stdout_bytes = usize::MAX;
+    let child = spawn_confined_streaming(&spec, &confinement(&scene), &oversized_stdout)
+        .expect("an out-of-range stdout limit is ignored");
+    let pid = recorded_pid(&scene);
+    let guard = KillOnDrop(pid);
+    child.cancel_signal().cancel();
+    let outcome = child.finish(Duration::from_secs(5)).expect("finish");
+    assert_eq!(outcome.termination, Termination::Cancelled);
+    drop(guard);
+    // The standard-error limit still applies.
+    let mut oversized_stderr = limits();
+    oversized_stderr.max_stderr_bytes = usize::MAX;
+    let error = spawn_confined_streaming(&spec, &confinement(&scene), &oversized_stderr)
+        .expect_err("an out-of-range stderr limit");
+    assert!(matches!(error, ProcessError::InvalidLimits(_)), "{error}");
+}
+
+/// A tree whose native calls fail, to prove that a failure before the tree is
+/// seen empty is unconfirmed cleanup with its cause, not a supervision failure.
+struct FailingTree {
+    terminate_fails: bool,
+    confirmed: bool,
+}
+
+impl super::super::ProcessTree for FailingTree {
+    fn try_exit(&mut self) -> io::Result<Option<Termination>> {
+        Ok(None)
+    }
+
+    fn terminate(&mut self) -> io::Result<()> {
+        if self.terminate_fails {
+            Err(io::Error::other("terminate failed"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn is_empty(&mut self) -> io::Result<bool> {
+        Err(io::Error::other("emptiness check failed"))
+    }
+
+    fn cleanup_confirmed(&mut self) {
+        self.confirmed = true;
+    }
+}
+
+#[test]
+fn a_failure_before_the_tree_is_seen_empty_is_unconfirmed_cleanup_with_its_cause() {
+    for (terminate_fails, cause) in [
+        (true, "terminate failed"),
+        (false, "emptiness check failed"),
+    ] {
+        let mut tree = FailingTree {
+            terminate_fails,
+            confirmed: false,
+        };
+        let error = super::super::stop_tree(&mut tree, Duration::from_millis(100))
+            .expect_err("the tree was never seen empty");
+        let ProcessError::CleanupUnconfirmed(cleanup) = &error else {
+            panic!("expected unconfirmed cleanup, got {error:?}");
+        };
+        assert_eq!(
+            cleanup.cause().map(ToString::to_string).as_deref(),
+            Some(cause)
+        );
+        assert!(!tree.confirmed, "a failed stop must not confirm cleanup");
+    }
 }

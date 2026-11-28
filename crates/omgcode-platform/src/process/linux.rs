@@ -29,7 +29,7 @@ use super::streaming::Launched;
 use super::{
     AppliedConfinement, CancelSignal, Capture, Confinement, DiskMonitor, ProcessError,
     ProcessLimits, ProcessOutcome, ProcessSpec, ProcessTree, ResourceLimit, StdinMode,
-    StreamingChild, Termination, TreeUsage, stop_tree, streaming, supervise,
+    StreamingChild, Termination, TreeUsage, UnconfirmedCleanup, stop_tree, streaming, supervise,
 };
 
 const SECCOMP_MODE_FILTER: libc::c_ulong = 2;
@@ -363,7 +363,9 @@ impl ProcessTree for LinuxTree {
     fn release(&mut self) -> Result<(), ProcessError> {
         match &mut self.cgroup {
             Some(cgroup) => cgroup.remove().map_err(|_| {
-                ProcessError::CleanupUnconfirmed("the run's cgroup could not be removed")
+                ProcessError::CleanupUnconfirmed(UnconfirmedCleanup::new(
+                    "the run's cgroup could not be removed",
+                ))
             }),
             None => Ok(()),
         }

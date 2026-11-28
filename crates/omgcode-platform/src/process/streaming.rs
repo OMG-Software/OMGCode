@@ -15,14 +15,14 @@
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::{
-    AppliedConfinement, CancelSignal, CapturedOutput, DiskMonitor, MAX_DEADLINE, POLL_INTERVAL,
-    ProcessError, ProcessLimits, ProcessTree, SUPERVISOR_SLACK, Termination, TreeUsage, receive,
-    settle, spawn_reader, stop_tree, watch,
+    AppliedConfinement, CancelSignal, CapturedOutput, DISK_ACCOUNTING_BOUND, DiskMonitor,
+    MAX_DEADLINE, POLL_INTERVAL, ProcessError, ProcessLimits, ProcessTree, SUPERVISOR_SLACK,
+    Termination, TreeUsage, UnconfirmedCleanup, receive, settle, spawn_reader, stop_tree, watch,
 };
 
 /// The platform's blocking write end of the child's standard input.
@@ -105,9 +105,16 @@ pub struct StreamingChild {
     stdout: Option<ChildOutput>,
     cancel: CancelSignal,
     ended: Arc<AtomicBool>,
+    /// Set by the supervisor as soon as it observes the tree empty, before the
+    /// usage, final disk accounting, and standard-error capture.
+    emptied: Arc<AtomicBool>,
     supervisor: Option<JoinHandle<Result<StreamingOutcome, ProcessError>>>,
-    /// Bound on how long to wait for a supervisor that was told to stop.
+    /// Bound on how long to wait for a supervisor that was told to stop, up to
+    /// the tree being observed empty.
     settle_bound: Duration,
+    /// Further bound, counted from the tree being observed empty, for the
+    /// final disk accounting and the standard-error capture.
+    accounting_bound: Duration,
 }
 
 impl StreamingChild {
@@ -143,7 +150,9 @@ impl StreamingChild {
     /// [`Termination::Cancelled`] (or an earlier deadline or limit). `grace`
     /// is capped at the longest accepted run deadline. The wait for the
     /// supervisor is bounded by twice the limits' cleanup timeout plus a
-    /// second.
+    /// second. Once the tree is observed empty, the final disk accounting and
+    /// standard-error capture get their own further bound, so a slow disk
+    /// scan is reported as a supervision failure, not as unconfirmed cleanup.
     ///
     /// # Errors
     ///
@@ -168,14 +177,22 @@ impl StreamingChild {
                 "the supervisor was already joined",
             )));
         };
-        match join_bounded(supervisor, self.settle_bound) {
-            Some(Ok(result)) => result,
-            Some(Err(_)) => Err(ProcessError::Supervision(io::Error::other(
+        match join_supervisor(
+            supervisor,
+            &self.emptied,
+            self.settle_bound,
+            self.accounting_bound,
+        ) {
+            Joined::Finished(Ok(result)) => result,
+            Joined::Finished(Err(_)) => Err(ProcessError::Supervision(io::Error::other(
                 "the supervisor thread panicked",
             ))),
-            None => Err(ProcessError::CleanupUnconfirmed(
-                "the supervisor did not finish in time",
+            Joined::CleanupTimedOut => Err(ProcessError::CleanupUnconfirmed(
+                UnconfirmedCleanup::new("the supervisor did not finish in time"),
             )),
+            Joined::AccountingTimedOut => Err(ProcessError::Supervision(io::Error::other(
+                "the tree was observed empty, but the final accounting did not finish in time",
+            ))),
         }
     }
 
@@ -213,6 +230,52 @@ fn join_bounded<T>(handle: JoinHandle<T>, bound: Duration) -> Option<thread::Res
     Some(handle.join())
 }
 
+/// How waiting for the supervisor thread ended.
+enum Joined<T> {
+    /// The thread ended, with its result or its panic.
+    Finished(thread::Result<T>),
+    /// The tree was not observed empty within the cleanup bound.
+    CleanupTimedOut,
+    /// The tree was observed empty, but the accounting after it did not end
+    /// within its own bound.
+    AccountingTimedOut,
+}
+
+/// Wait for the supervisor: at most `cleanup_bound` for it to observe the tree
+/// empty, then at most `accounting_bound` more, counted from that observation
+/// and never shortening the first bound, for what follows. The thread is left
+/// running when a bound passes.
+fn join_supervisor<T>(
+    handle: JoinHandle<T>,
+    emptied: &AtomicBool,
+    cleanup_bound: Duration,
+    accounting_bound: Duration,
+) -> Joined<T> {
+    let mut until = Instant::now()
+        .checked_add(cleanup_bound)
+        .unwrap_or_else(Instant::now);
+    let mut counted = false;
+    while !handle.is_finished() {
+        let now = Instant::now();
+        let observed = emptied.load(Ordering::SeqCst);
+        if observed && !counted {
+            counted = true;
+            if let Some(later) = now.checked_add(accounting_bound) {
+                until = until.max(later);
+            }
+        }
+        if now >= until {
+            return if observed {
+                Joined::AccountingTimedOut
+            } else {
+                Joined::CleanupTimedOut
+            };
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+    Joined::Finished(handle.join())
+}
+
 /// A started tree and the pipe ends the platform launch produced.
 pub(super) struct Launched<T, S> {
     pub tree: T,
@@ -228,14 +291,16 @@ pub(super) struct Launched<T, S> {
 /// Start the supervisor for a launched tree.
 ///
 /// On failure the tree is terminated and observed empty before the error is
-/// returned, except when the supervisor thread itself cannot start: the tree
-/// then drops, which kills it (Job Object close on Windows, `Drop` on Linux),
-/// and the error says so.
+/// returned, including when the supervisor thread cannot start: the tree owner
+/// stays here until the thread has started, and a failed start terminates and
+/// reaps it synchronously. A tree that cannot be observed empty is reported as
+/// [`ProcessError::CleanupUnconfirmed`] and left to its drop fallback.
 pub(super) fn start<T, S>(launched: Launched<T, S>) -> Result<StreamingChild, ProcessError>
 where
     T: ProcessTree + Send + 'static,
     S: Read + Send + 'static,
 {
+    let has_disk = launched.disk.is_some();
     let Launched {
         mut tree,
         stdin,
@@ -248,42 +313,78 @@ where
     } = launched;
     let stderr = match spawn_reader("omgcode-stderr", stderr, limits.max_stderr_bytes) {
         Ok(receiver) => receiver,
-        Err(error) => {
-            stop_tree(&mut tree, limits.cleanup_timeout)?;
-            tree.cleanup_confirmed();
-            return Err(ProcessError::Supervision(error));
-        }
+        Err(error) => return Err(terminate_unsupervised(&mut tree, limits, error)),
     };
     let cancel = CancelSignal::new();
     let ended = Arc::new(AtomicBool::new(false));
-    let supervisor = {
+    let emptied = Arc::new(AtomicBool::new(false));
+    // The thread receives the tree only after it exists, so a failed start
+    // leaves the owner here to terminate and reap it.
+    let (hand_over, received) = mpsc::sync_channel::<T>(1);
+    let spawned = {
         let cancel = cancel.clone();
         let ended = Arc::clone(&ended);
+        let emptied = Arc::clone(&emptied);
         thread::Builder::new()
             .name("omgcode-supervisor".to_owned())
             .spawn(move || {
+                let Ok(tree) = received.recv() else {
+                    return Err(ProcessError::Supervision(io::Error::other(
+                        "the supervisor never received the tree",
+                    )));
+                };
                 supervise_streaming(
-                    tree, &stderr, started, limits, &cancel, applied, disk, &ended,
+                    tree, &stderr, started, limits, &cancel, applied, disk, &ended, &emptied,
                 )
             })
-            .map_err(|error| {
-                ProcessError::Supervision(io::Error::new(
-                    error.kind(),
-                    "the supervisor thread could not start; the tree was left to its kill-on-close",
-                ))
-            })?
     };
+    let supervisor = match spawned {
+        Ok(supervisor) => supervisor,
+        Err(error) => return Err(terminate_unsupervised(&mut tree, limits, error)),
+    };
+    if let Err(unsent) = hand_over.send(tree) {
+        // The thread ended before it took the tree, so nothing supervises it.
+        let mut tree = unsent.0;
+        return Err(terminate_unsupervised(
+            &mut tree,
+            limits,
+            io::Error::other("the supervisor thread ended before it took the tree"),
+        ));
+    }
     Ok(StreamingChild {
         stdin: Some(ChildInput(stdin)),
         stdout: Some(ChildOutput(stdout)),
         cancel,
         ended,
+        emptied,
         supervisor: Some(supervisor),
         settle_bound: limits
             .cleanup_timeout
             .saturating_mul(2)
             .saturating_add(SUPERVISOR_SLACK),
+        accounting_bound: if has_disk {
+            DISK_ACCOUNTING_BOUND
+        } else {
+            Duration::ZERO
+        },
     })
+}
+
+/// Terminate and reap a tree no supervisor owns. A tree observed empty is
+/// confirmed and `cause` is reported as a supervision failure; otherwise the
+/// unconfirmed cleanup is returned and the tree's drop fallback stays armed.
+fn terminate_unsupervised(
+    tree: &mut impl ProcessTree,
+    limits: ProcessLimits,
+    cause: io::Error,
+) -> ProcessError {
+    match stop_tree(tree, limits.cleanup_timeout) {
+        Ok(()) => {
+            tree.cleanup_confirmed();
+            ProcessError::Supervision(cause)
+        }
+        Err(unconfirmed) => unconfirmed,
+    }
 }
 
 /// The supervisor thread body: watch, then stop the tree and observe it empty.
@@ -300,9 +401,13 @@ fn supervise_streaming(
     confinement: AppliedConfinement,
     disk: Option<DiskMonitor>,
     ended: &AtomicBool,
+    emptied: &AtomicBool,
 ) -> Result<StreamingOutcome, ProcessError> {
     let watched = watch(&mut tree, started, limits.deadline, cancel, disk.as_ref());
-    let result = settle(&mut tree, watched, started, limits, disk).and_then(|settled| {
+    let settled = settle(&mut tree, watched, started, limits, disk, || {
+        emptied.store(true, Ordering::SeqCst);
+    });
+    let result = settled.and_then(|settled| {
         ended.store(true, Ordering::SeqCst);
         let stderr = receive(stderr, Instant::now() + limits.cleanup_timeout)?;
         Ok(StreamingOutcome {

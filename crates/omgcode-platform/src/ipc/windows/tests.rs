@@ -34,6 +34,14 @@ const FIXTURE_NAME: &str = "ipc::windows::tests::fixture";
 /// More than the pipe's 64 KiB buffer, so a write needs the peer to read.
 const PAYLOAD_BYTES: usize = 512 * 1024;
 const LONG: Duration = Duration::from_secs(60);
+/// Grace period after a thread reports that it is about to block. User space
+/// cannot observe that an overlapped read or `ConnectNamedPipe` is pending
+/// without a hook in production code, so a test signals immediately before the
+/// blocking call and then waits this long for the thread to reach it. A thread
+/// that is slower only turns the test into one that raises the signal before
+/// the operation starts, which production code also handles; the pre-raised
+/// case has its own assertion.
+const PENDING_GRACE: Duration = Duration::from_millis(100);
 
 /// Child entry point. It does nothing unless a mode was selected.
 #[test]
@@ -272,6 +280,34 @@ fn accept_in_thread(
     thread::spawn(move || listener.accept(Instant::now() + wait, &cancel))
 }
 
+/// Accept on another thread. The receiver gets one message immediately before
+/// the blocking `accept` call.
+fn accept_in_thread_signalling(
+    listener: LocalListener,
+    cancel: &CancelSignal,
+    wait: Duration,
+) -> (
+    JoinHandle<Result<LocalStream, IpcError>>,
+    mpsc::Receiver<()>,
+) {
+    let cancel = cancel.clone();
+    let (started, pending) = mpsc::channel();
+    let handle = thread::spawn(move || {
+        started.send(()).expect("report that accept is starting");
+        listener.accept(Instant::now() + wait, &cancel)
+    });
+    (handle, pending)
+}
+
+/// Wait, bounded, for the signal sent just before a blocking call, then give
+/// the call [`PENDING_GRACE`] to start blocking.
+fn await_pending(pending: &mpsc::Receiver<()>) {
+    pending
+        .recv_timeout(LONG)
+        .expect("the thread never reached its blocking call");
+    thread::sleep(PENDING_GRACE);
+}
+
 #[test]
 fn a_container_client_exchanges_a_line_each_way() {
     let name = unique_name();
@@ -302,10 +338,14 @@ fn a_blocked_read_does_not_block_a_write_on_the_same_stream() {
     let (reader, mut writer, _shutdown) = stream.split().expect("split");
     // The child sends nothing until it has the whole payload, so this read is
     // blocked for the whole write below.
+    let (started, pending) = mpsc::channel();
     let reading = thread::spawn(move || {
         let mut line = String::new();
+        started.send(()).expect("report that the read is starting");
         BufReader::new(reader).read_line(&mut line).map(|_| line)
     });
+    // The write starts only once the read thread is at its blocking call.
+    await_pending(&pending);
     let writing = thread::spawn(move || writer.write_all(&vec![b'x'; PAYLOAD_BYTES]));
     join_within(writing, LONG).expect("the write finished while a read was blocked");
     let line = join_within(reading, LONG).expect("read the answer");
@@ -324,6 +364,7 @@ fn shutdown_ends_a_blocked_read_and_the_peer_sees_the_close() {
     let stream = join_within(accepting, LONG).expect("accept");
     let (mut reader, writer, shutdown) = stream.split().expect("split");
     let (ready_sender, ready) = mpsc::channel();
+    let (pending_sender, pending) = mpsc::channel();
     let reading = thread::spawn(move || {
         let mut line = String::new();
         {
@@ -331,14 +372,18 @@ fn shutdown_ends_a_blocked_read_and_the_peer_sees_the_close() {
             lines.read_line(&mut line).expect("ready line");
         }
         ready_sender.send(line).expect("report the line");
-        // Nothing more will arrive: this read blocks until shutdown.
+        // Nothing more will arrive: this read blocks until shutdown. The
+        // signal goes out immediately before the blocking read.
         let mut buffer = [0_u8; 16];
+        pending_sender
+            .send(())
+            .expect("report that the read is starting");
         reader.read(&mut buffer)
     });
     assert_eq!(ready.recv_timeout(LONG).expect("child ready"), "ready\n");
-    // Give the read time to block. The result does not depend on it: shutdown
-    // also ends a read that starts later.
-    thread::sleep(Duration::from_millis(200));
+    // Shutdown also ends a read that starts later; the signal and grace make
+    // the interrupted-read case the one that normally runs.
+    await_pending(&pending);
     let started = Instant::now();
     shutdown.shutdown().expect("shutdown");
     let read = join_within(reading, Duration::from_secs(10)).expect("the read returns");
@@ -460,8 +505,8 @@ fn accept_stops_when_cancelled() {
     let listener = listener_for(&name);
     let cancel = CancelSignal::new();
     let raiser = cancel.clone();
-    let accepting = accept_in_thread(listener, &cancel, LONG);
-    thread::sleep(Duration::from_millis(100));
+    let (accepting, pending) = accept_in_thread_signalling(listener, &cancel, LONG);
+    await_pending(&pending);
     let started = Instant::now();
     raiser.cancel();
     let accepted = join_within(accepting, Duration::from_secs(10));

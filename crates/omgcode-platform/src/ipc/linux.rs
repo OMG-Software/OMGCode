@@ -91,8 +91,13 @@ impl Listener {
         )
         .map_err(|error| os("create the socket", error))?;
         bind(&socket, &socket_address).map_err(|error| os("bind the socket", error))?;
-        // From here the entry exists, so the value's `Drop` removes it on every
-        // error path below.
+        // From here the entry exists. If this lookup fails there is no verified
+        // identity, so nothing removes the name: `Drop` unlinks only an entry
+        // it can prove it bound, and a blind unlink could remove another
+        // program's replacement. The caller's private directory owns the
+        // cleanup of that entry (the Claude Code launcher removes its per-turn
+        // directory with the turn). Once the listener exists, its `Drop`
+        // removes the entry on every error path below.
         let identity =
             socket_identity(&directory, &name).map_err(|error| os("check the socket", error))?;
         let listener = Self {
