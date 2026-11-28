@@ -10,6 +10,7 @@ import type {
 import { NOTHING_CHANGED, type SettingsApp, startSettings } from "../src/settings/app";
 import { ROOM_UNKNOWN, workspaceTooLong } from "../src/settings/chat_section";
 import {
+  CLAUDE_CODE_SIGN_IN_AGAIN_NOTE,
   NO_ENDPOINT_NOTE,
   PROGRAM_CONNECTION_NOTE,
   UNSUPPORTED_AUTH_NOTE,
@@ -792,6 +793,7 @@ describe("advanced section", () => {
     expect(row?.textContent).toContain(PROGRAM_CONNECTION_NOTE);
     expect(row?.textContent).toContain("Program: C:\\Tools\\claude.exe");
     expect(row?.textContent).toContain("Sign-in folder: C:\\Claude\\sign-in");
+    expect(row?.textContent).toContain(CLAUDE_CODE_SIGN_IN_AGAIN_NOTE);
     expect(row?.textContent).toContain("Relay folder: C:\\OMGCode (active)");
     expect(row?.textContent).toContain("the program keeps its own sign-in");
     // OMGCode sends nothing itself, so it is not called hosted or told to take an API key.

@@ -25,7 +25,7 @@ fn service(fixture: &Fixture, endpoint: &str, profile: &str) -> DesktopService {
         token_source: TokenSource::Profile(profile.to_owned()),
         // The scripted model server answers with plain JSON.
         stream: false,
-        claude_code_relay: None,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("open desktop service")
 }

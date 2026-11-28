@@ -531,12 +531,18 @@ selectable check keeps it from being the active selection.
 
 Since ADR-0111 the desktop shell can use the connection too. In the
 `settings` window's **Model** section, choose **Claude Code** in the add
-dropdown and press **Add connection**; Rust then asks for the `claude`
-program and the sign-in folder in native dialogs and confirms both. On
-Windows, **Grant folders** grants the same four folders, with the `omgcode`
-executable beside `omgcode-desktop` as the relay, so keep both executables
-in one folder, as the testing archives do; a grant made by an `omgcode` in
-another folder does not cover the desktop's turns. Then choose the
+dropdown and press **Add connection**. Rust finds `claude` on your `PATH`
+or in the native installer's `~/.local/bin` (it asks for the program only
+when neither has it), creates the connection's own sign-in folder under
+`omgcode-claude-code` in your local data folder, and asks you once to
+confirm. On Windows the same Add grants the four folders, with the
+`omgcode` executable beside `omgcode-desktop` as the relay, so keep both
+executables in one folder, as the testing archives do; a grant made by an
+`omgcode` in another folder does not cover the desktop's turns. It then
+opens Claude's own sign-in in a new console window: finish it in the
+browser, and the window closes when `claude` exits. On Linux run the
+command the confirmation shows. To sign in again, revoke the folders,
+remove the connection, and add it again. Then choose the
 connection for a session in the `main` window's model box and confirm. It
 is never the default connection. A connection removed and added again under
 the same name is another profile, so each session that chose the first one

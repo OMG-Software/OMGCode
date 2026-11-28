@@ -958,6 +958,13 @@ and a tool turn keeps that process for all its rounds.
   failure end the whole tree, and the end is observed before the turn
   returns. A failed termination or emptiness check counts as unconfirmed
   cleanup, so the tree's own fallback kill still runs.
+- **Sign-in.** On Windows the desktop's Claude Code Add starts the
+  connection's program once as `claude auth login` for the sign-in folder
+  it has just created (ADR-0111), through the platform's
+  `start_in_new_console`. That is not a run and not a turn: it gets a
+  console window of its own and an environment built from nothing, but no
+  container, job, limit, journal entry, or wait, as a program the operator
+  starts in a terminal. It inherits no handle.
 - **Withdrawal.** Each process holds a shared lock on
   `claude-code/<profile id>.turns` in application storage, outside every
   grant, from before its per-turn folder is made until its whole tree was

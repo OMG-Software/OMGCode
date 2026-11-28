@@ -115,7 +115,7 @@ impl Fixture {
             endpoint: "http://127.0.0.1:9/v1".into(),
             token_source: TokenSource::Active,
             stream: false,
-            claude_code_relay: None,
+            claude_code: crate::desktop::ClaudeCodeHost::default(),
         })
         .expect("desktop service");
         Arc::get_mut(&mut service.inner)

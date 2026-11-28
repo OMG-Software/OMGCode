@@ -16,6 +16,12 @@
 //! dialog that cannot be shown returns no folder or no confirmation, so a
 //! failure never applies a change.
 //!
+//! After a Claude Code connection was added and confirmed, the prompt also
+//! starts Claude's own sign-in in a console window of its own through the
+//! service's `start_claude_code_sign_in` (ADR-0111). That is a program, not a
+//! dialog: it is started on Windows only, it is not waited for, and nothing
+//! it writes reaches OMGCode.
+//!
 //! Platform notes:
 //! - Windows: the folder picker is `IFileOpenDialog` and the confirmation is a
 //!   Yes/No message box. Its default button is Yes, as `rfd` offers no choice.
@@ -30,7 +36,10 @@
 
 use std::path::{Path, PathBuf};
 
-use omgcode_app::desktop::{Confirmation, FilePurpose, FolderPurpose, SettingsPrompt};
+use omgcode_app::desktop::{
+    ClaudeCodeSignIn, Confirmation, FilePurpose, FolderPurpose, SettingsPrompt,
+    start_claude_code_sign_in,
+};
 use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
 use tauri::Window;
 
@@ -89,6 +98,11 @@ impl SettingsPrompt for NativePrompt {
                 .show()
         })
         .is_some_and(|answer| is_confirmed(&answer))
+    }
+
+    /// Claude's own sign-in, in a console window of its own (ADR-0111).
+    fn start_claude_code_sign_in(&self, sign_in: &ClaudeCodeSignIn) -> Result<(), String> {
+        start_claude_code_sign_in(sign_in)
     }
 }
 

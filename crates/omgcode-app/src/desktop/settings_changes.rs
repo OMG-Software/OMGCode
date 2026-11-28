@@ -56,6 +56,7 @@ use omgcode_core::turn::display_safe_line;
 use uuid::Uuid;
 
 use super::DesktopService;
+use super::claude_code_sign_in::ClaudeCodeSignIn;
 use super::error::DesktopError;
 use super::instructions;
 use super::session_connections::{
@@ -90,9 +91,6 @@ pub enum FolderPurpose {
     /// A folder to grant read and execute to a workspace's container. A
     /// read-write grant opens no dialog (ADR-0104).
     ContainerGrant,
-    /// The folder `claude auth login` signed in to, for a Claude Code
-    /// connection (ADR-0111).
-    ClaudeCodeSignIn,
 }
 
 impl FolderPurpose {
@@ -109,7 +107,6 @@ impl FolderPurpose {
             // The access goes to the workspace's AppContainer, not to the
             // operator or the folder (ADR-0104).
             Self::ContainerGrant => "Choose a folder the workspace's sandbox may read and execute",
-            Self::ClaudeCodeSignIn => "Choose the folder claude signed in to",
         }
     }
 }
@@ -118,7 +115,8 @@ impl FolderPurpose {
 /// dialog title.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilePurpose {
-    /// The `claude` program of a Claude Code connection (ADR-0111).
+    /// The `claude` program of a Claude Code connection, when none was found
+    /// on `PATH` or in the installer's folder (ADR-0111).
     ClaudeCodeProgram,
 }
 
@@ -164,6 +162,22 @@ pub trait SettingsPrompt {
     /// Ask the operator to confirm a change. `true` only on an explicit
     /// confirmation.
     fn confirm(&self, confirmation: &Confirmation) -> bool;
+
+    /// Start Claude's own sign-in for a Claude Code connection just added
+    /// and confirmed, in a window of its own, without waiting for it
+    /// (ADR-0111). The shell calls
+    /// [`start_claude_code_sign_in`](super::start_claude_code_sign_in).
+    /// `Err` carries a display-safe reason, and the operator is told to sign
+    /// in from a terminal instead; that is what a prompt that opens no such
+    /// window answers.
+    ///
+    /// # Errors
+    ///
+    /// The reason the sign-in did not start.
+    fn start_claude_code_sign_in(&self, sign_in: &ClaudeCodeSignIn) -> Result<(), String> {
+        let _ = sign_in;
+        Err("this window cannot open Claude's sign-in".to_owned())
+    }
 }
 
 /// Holds the one-change-at-a-time flag and clears it on every path.
@@ -1215,7 +1229,7 @@ impl DesktopService {
         // request is refused before its key is read.
         if kind.runs_program() {
             return Err(DesktopError::invalid_request(
-                "A Claude Code connection is added with its own program and folder dialogs.",
+                "A Claude Code connection is added with its own Add, which finds the program and creates the sign-in folder.",
             ));
         }
         let fixed = kind.fixed_endpoint();

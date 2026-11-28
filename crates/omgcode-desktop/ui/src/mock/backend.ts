@@ -11,6 +11,7 @@ import type {
   ChatOutcome,
   ChatSettings,
   ChatStatus,
+  ClaudeCodeGrantView,
   ComposerPreferences,
   ConnectionStatus,
   ConnectionView,
@@ -1405,11 +1406,11 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (!(NEW_CONNECTION_KINDS as readonly string[]).includes(kind)) {
             fail("invalid_argument", "Bad kind.");
           }
-          // Rust adds one through settings_add_claude_code, with native dialogs (ADR-0111).
+          // Rust adds one through settings_add_claude_code (ADR-0111).
           if (isProgramKind(kind)) {
             fail(
               "invalid_request",
-              "A Claude Code connection is added with its own program and folder dialogs.",
+              "A Claude Code connection is added with its own Add, which finds the program and creates the sign-in folder.",
             );
           }
           // The same three shapes Rust accepts (ADR-0092).
@@ -1785,7 +1786,8 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
         });
         return { overview, revoked: true };
       }
-      // Rust's native dialogs choose the program and folder; the mock records fixed ones.
+      // Rust finds the program, creates the sign-in folder, grants it on Windows, and opens
+      // Claude's sign-in; the mock records fixed paths and grants.
       case "settings_add_claude_code":
         return changeSettings(args, () => {
           const name = str(args, "name");
@@ -1805,11 +1807,14 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
             active: false,
             account_label: null,
             claude_code: {
-              program: "C:\\Tools\\claude.exe",
-              config_folder: "C:\\Claude\\sign-in",
+              program: "C:\\Users\\you\\.local\\bin\\claude.exe",
+              config_folder: "C:\\Users\\you\\AppData\\Local\\omgcode-claude-code\\1f0c",
               grants: [],
             },
           });
+          if (settings.container_grants_supported) {
+            claudeCodeSetup(name).grants = claudeCodeGrants(claudeCodeSetup(name).config_folder);
+          }
         });
       case "settings_grant_claude_code":
         return changeSettings(args, () => {
@@ -1817,12 +1822,7 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
           if (!settings.container_grants_supported) {
             fail("unsupported_platform", "Container grants are supported on Windows only.");
           }
-          setup.grants = [
-            { role: "program", directory: "C:\\Tools", state: "active" },
-            { role: "configuration", directory: setup.config_folder, state: "active" },
-            { role: "runtime", directory: "C:\\Data\\claude-code\\run", state: "active" },
-            { role: "relay", directory: "C:\\OMGCode", state: "active" },
-          ];
+          setup.grants = claudeCodeGrants(setup.config_folder);
         });
       case "settings_revoke_claude_code":
         return changeSettings(args, () => {
@@ -1948,6 +1948,16 @@ export function createMockBackend(now: () => number = Date.now): { invoke: Invok
   }
 
   /** A recorded Claude Code connection's setup, or a refusal as core gives one. */
+  /** The four grants Rust records for a Claude Code connection on Windows (ADR-0111). */
+  function claudeCodeGrants(configFolder: string): ClaudeCodeGrantView[] {
+    return [
+      { role: "program", directory: "C:\\Users\\you\\.local\\bin", state: "active" },
+      { role: "configuration", directory: configFolder, state: "active" },
+      { role: "runtime", directory: "C:\\Data\\claude-code\\run", state: "active" },
+      { role: "relay", directory: "C:\\OMGCode", state: "active" },
+    ];
+  }
+
   function claudeCodeSetup(name: string) {
     const setup = settings.provider_profiles.find((p) => p.name === name)?.claude_code;
     if (setup === undefined) {

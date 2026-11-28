@@ -72,7 +72,7 @@ fn service(fixture: &Fixture) -> DesktopService {
         endpoint: unused_endpoint(),
         token_source: TokenSource::Active,
         stream: false,
-        claude_code_relay: None,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("open desktop service")
 }

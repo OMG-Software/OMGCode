@@ -692,7 +692,7 @@ impl Fixture {
                 endpoint: endpoint.to_owned(),
                 token_source: TokenSource::Environment,
                 stream,
-                claude_code_relay: None,
+                claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
             },
             source,
         )

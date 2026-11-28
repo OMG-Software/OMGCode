@@ -111,6 +111,22 @@ fn fixture() {
         "grow-disk" => grow_disk(),
         #[cfg(windows)]
         "nested-job" => tree_limits::nested_job(),
+        #[cfg(windows)]
+        "console" => {
+            use std::io::IsTerminal;
+            let mut names: Vec<String> = env::vars_os()
+                .map(|(name, _)| name.to_string_lossy().to_uppercase())
+                .collect();
+            names.sort();
+            let console = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            let folder = env::current_dir().expect("working folder");
+            write_record(&format!(
+                "console={console}\nfolder={}\nenv={}\n",
+                folder.display(),
+                names.join(",")
+            ));
+            0
+        }
         #[cfg(target_os = "linux")]
         "signal" => {
             rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::TERM)
@@ -207,6 +223,52 @@ fn attempt_escape() -> String {
         }
         Err(_) => "denied".to_owned(),
     }
+}
+
+/// A program started in a console window of its own reads and writes that
+/// console, gets exactly the spec's environment and working folder, and is
+/// left running when the call returns (ADR-0111). A console window opens
+/// briefly while this test runs.
+#[cfg(windows)]
+#[test]
+fn a_program_starts_in_a_console_window_of_its_own() {
+    let directory = tempfile::tempdir().expect("record folder");
+    let record = directory.path().join("record");
+    let mut started = with_record(spec("console"), &record);
+    started.working_directory = env::temp_dir();
+    super::start_in_new_console(&started).expect("started");
+    let until = Instant::now() + Duration::from_secs(30);
+    while !record.exists() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(20));
+    }
+    let text = fs::read_to_string(&record).expect("the program wrote its record");
+    assert!(text.contains("console=true\n"), "{text}");
+    let folder = text
+        .lines()
+        .find_map(|line| line.strip_prefix("folder="))
+        .expect("folder line");
+    assert_eq!(Path::new(folder), env::temp_dir(), "{text}");
+    let mut expected: Vec<String> = started
+        .environment
+        .iter()
+        .map(|(name, _)| name.to_string_lossy().to_uppercase())
+        .collect();
+    expected.sort();
+    assert!(
+        text.contains(&format!("env={}\n", expected.join(","))),
+        "{text}"
+    );
+}
+
+/// The console start checks its spec as a run does.
+#[test]
+fn a_console_start_refuses_a_relative_program() {
+    let mut relative = spec("console");
+    relative.program = PathBuf::from("relative.exe");
+    assert!(matches!(
+        super::start_in_new_console(&relative),
+        Err(ProcessError::InvalidSpec(_))
+    ));
 }
 
 fn spec(mode: &str) -> ProcessSpec {

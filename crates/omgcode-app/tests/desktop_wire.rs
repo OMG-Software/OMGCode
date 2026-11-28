@@ -336,7 +336,7 @@ fn error_value() -> DesktopError {
             endpoint: "http://127.0.0.1:1/v1".to_owned(),
             token_source: omgcode_app::TokenSource::Environment,
             stream: true,
-            claude_code_relay: None,
+            claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
         },
         common::no_token,
     )

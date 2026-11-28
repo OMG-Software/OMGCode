@@ -620,8 +620,10 @@ documented route for local and open-source apps
 ## Claude Code connection (ADR-0109)
 
 A `claude_code` profile drives the operator's own signed-in Claude Code CLI
-(`claude`) as a model connection. OMGCode offers no Claude sign-in and never
-reads, copies, stores, or passes a Claude credential. This is personal use of
+(`claude`) as a model connection. OMGCode has no Claude sign-in of its own
+and never reads, copies, stores, or passes a Claude credential; the desktop
+only starts Claude's own `claude auth login` for a connection it has just
+added (ADR-0111). This is personal use of
 the operator's own sign-in to the unmodified binary; it is not evidence of
 Anthropic approval, and the Claude subscription requirement stays open.
 
@@ -640,10 +642,15 @@ Anthropic approval, and the Claude subscription requirement stays open.
   relay), and on the connection's runtime folder in application storage,
   and read-write on the sign-in folder. `workspace claude-code-revoke NAME`
   revokes every grant and deletes the container profile;
-  since ADR-0111 the desktop `settings` window adds a connection through a
-  native file dialog, a native folder dialog, and a native confirmation, and
-  grants and revokes the same folders, using the `omgcode` executable beside
-  the desktop application as the relay; a profile with
+  since ADR-0111 the desktop `settings` window adds a connection by finding
+  `claude` on `PATH` or in the native installer's folder (or through a
+  native file dialog when neither has it), creating a new, empty sign-in
+  folder, and one native confirmation; on Windows the same Add grants the
+  same folders, using the `omgcode` executable beside the desktop
+  application as the relay, and then starts Claude's own `claude auth
+  login` for that folder in a console window outside the sandbox, with an
+  environment built from nothing. The window also grants and revokes the
+  folders again later; a profile with
   grants cannot be removed. Revoking, and removing the connection with
   `provider-profile-remove` or the `settings` window, ends its running turns
   and waits up to 30 seconds for their processes to end. Each turn writes

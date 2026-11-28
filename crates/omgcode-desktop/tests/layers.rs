@@ -849,7 +849,7 @@ fn command_error_keeps_the_service_code_and_message() {
         endpoint: "http://127.0.0.1:1234/v1".to_owned(),
         token_source: omgcode_app::TokenSource::Environment,
         stream: true,
-        claude_code_relay: None,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("open service");
     let failure = service

@@ -632,6 +632,37 @@ fn run_native(
     ))
 }
 
+/// Start one program in a console window of its own and return without
+/// waiting for it. Windows only.
+///
+/// This is for a program the operator works with directly, such as Claude's
+/// own sign-in (ADR-0111). It is not supervised, confined, limited, or placed
+/// in a job, so it keeps running after the caller ends. It inherits no handle
+/// and no standard handle, so it reads and writes its new console, and it
+/// gets exactly `spec.environment`. The spec is checked as [`run`] checks it.
+///
+/// # Errors
+///
+/// [`ProcessError::InvalidSpec`] for a spec [`run`] would refuse;
+/// [`ProcessError::Unsupported`] outside Windows; [`ProcessError::Spawn`]
+/// when the program could not be started.
+pub fn start_in_new_console(spec: &ProcessSpec) -> Result<(), ProcessError> {
+    validate_spec(spec)?;
+    start_native_console(spec)
+}
+
+#[cfg(windows)]
+fn start_native_console(spec: &ProcessSpec) -> Result<(), ProcessError> {
+    windows::start_in_new_console(spec)
+}
+
+#[cfg(not(windows))]
+fn start_native_console(_spec: &ProcessSpec) -> Result<(), ProcessError> {
+    Err(ProcessError::Unsupported(
+        "a program starts in a console window of its own only on Windows",
+    ))
+}
+
 fn validate_spec(spec: &ProcessSpec) -> Result<(), ProcessError> {
     if !spec.program.is_absolute() {
         return Err(ProcessError::InvalidSpec("program path must be absolute"));

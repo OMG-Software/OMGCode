@@ -593,7 +593,7 @@ impl Inner {
         &self,
         choice: &ClaudeCodeChoice,
     ) -> Result<ClaudeCodePaths, DesktopError> {
-        let relay = self.claude_code_relay.as_deref().ok_or_else(|| {
+        let relay = self.claude_code.relay.as_deref().ok_or_else(|| {
             DesktopError::from_app(&AppError::new(
                 ErrorKind::Credential,
                 "claude_code_unusable: no omgcode executable was found beside the desktop application to serve as the MCP relay",

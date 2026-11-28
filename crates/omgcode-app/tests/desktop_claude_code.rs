@@ -1,9 +1,13 @@
-//! A Claude Code connection in the desktop shell (ADR-0111): added from the
-//! `settings` window through native dialogs and one confirmation, chosen for
-//! one session only, offered its aliases and efforts, refused as the default
+//! A Claude Code connection in the desktop shell (ADR-0111): found on the
+//! search path or chosen in a file dialog, added from the `settings` window
+//! with its own new sign-in folder after one confirmation, granted on
+//! Windows, signed in through a recorded sign-in start, chosen for one
+//! session only, offered its aliases and efforts, refused as the default
 //! connection, and stale once removed. A scripted prompt stands in for the
-//! native dialogs. No `claude` program runs here: the program is an empty
-//! file, and every turn is refused before any process could start.
+//! native dialogs and records each sign-in instead of starting it. No
+//! `claude` program runs here: the program is an empty file, and every turn
+//! is refused before any process could start. On Windows an accepted add
+//! changes real access lists on temporary folders and revokes them again.
 
 mod common;
 
@@ -14,8 +18,9 @@ use std::path::{Path, PathBuf};
 
 use omgcode_app::TokenSource;
 use omgcode_app::desktop::{
-    Confirmation, ConnectionOrigin, ConnectionStatus, DesktopConfig, DesktopError, DesktopService,
-    FilePurpose, FolderPurpose, ReasoningEffort, SettingsOverview, SettingsPrompt,
+    ClaudeCodeHost, ClaudeCodeSignIn, Confirmation, ConnectionOrigin, ConnectionStatus,
+    DesktopConfig, DesktopError, DesktopService, FilePurpose, FolderPurpose, ReasoningEffort,
+    SettingsOverview, SettingsPrompt,
 };
 use omgcode_core::control::{ClaudeCodeDeclaration, ControlStore};
 use serde_json::json;
@@ -27,13 +32,15 @@ use common::{Fixture, NoCallServer, settings_json, text_only, wire};
 /// The label a session records for the connection `claude`.
 const LABEL: &str = "claude-code:claude";
 
-/// Answers the native dialogs in order and records every confirmation.
+/// Answers the native dialogs in order, records every confirmation, and
+/// records each sign-in start, answering it with `sign_in_failure`.
 #[derive(Default)]
 struct Scripted {
     files: RefCell<VecDeque<Option<PathBuf>>>,
-    folders: RefCell<VecDeque<Option<PathBuf>>>,
     answers: RefCell<VecDeque<bool>>,
     shown: RefCell<Vec<Confirmation>>,
+    sign_ins: RefCell<Vec<ClaudeCodeSignIn>>,
+    sign_in_failure: Option<String>,
 }
 
 impl Scripted {
@@ -45,28 +52,31 @@ impl Scripted {
         }
     }
 
-    /// A file dialog, a folder dialog, and confirmations, each in order.
-    fn dialogs(file: Option<&Path>, folder: Option<&Path>, answers: &[bool]) -> Self {
+    /// One file dialog, then confirmations, each in order.
+    fn file(file: Option<&Path>, answers: &[bool]) -> Self {
         Self {
             files: RefCell::new(VecDeque::from([file.map(Path::to_path_buf)])),
-            folders: RefCell::new(VecDeque::from([folder.map(Path::to_path_buf)])),
-            answers: RefCell::new(answers.iter().copied().collect()),
-            shown: RefCell::default(),
+            ..Self::answers(answers)
         }
     }
 
     fn shown(&self) -> Vec<Confirmation> {
         self.shown.take()
     }
+
+    fn sign_ins(&self) -> Vec<ClaudeCodeSignIn> {
+        self.sign_ins.take()
+    }
 }
 
 impl SettingsPrompt for Scripted {
     fn pick_folder(&self, purpose: FolderPurpose, _start: Option<&Path>) -> Option<PathBuf> {
-        assert_eq!(purpose, FolderPurpose::ClaudeCodeSignIn);
-        self.folders
-            .borrow_mut()
-            .pop_front()
-            .expect("an unexpected folder dialog")
+        panic!("an unexpected folder dialog: {purpose:?}");
+    }
+
+    fn start_claude_code_sign_in(&self, sign_in: &ClaudeCodeSignIn) -> Result<(), String> {
+        self.sign_ins.borrow_mut().push(sign_in.clone());
+        self.sign_in_failure.clone().map_or(Ok(()), Err)
     }
 
     fn pick_file(&self, purpose: FilePurpose, _start: Option<&Path>) -> Option<PathBuf> {
@@ -86,14 +96,17 @@ impl SettingsPrompt for Scripted {
     }
 }
 
-/// A `claude` program and a sign-in folder outside application storage, the
-/// development root, and every workspace, as core requires. The program is
-/// an empty file: nothing here starts it.
+/// A `claude` program, a sign-in folder, a relay, and a parent for new
+/// sign-in folders, outside application storage, the development root, and
+/// every workspace, as core requires. The program and the relay are empty
+/// files: nothing here starts them.
 struct Outside {
     _temporary: TempDir,
     program: PathBuf,
     sign_in: PathBuf,
     root: PathBuf,
+    relay: PathBuf,
+    sign_ins: PathBuf,
 }
 
 impl Outside {
@@ -110,22 +123,67 @@ impl Outside {
         fs::write(&program, b"").expect("program file");
         let sign_in = root.join("sign-in");
         fs::create_dir_all(&sign_in).expect("sign-in folder");
+        let relay_folder = root.join("relay");
+        fs::create_dir_all(&relay_folder).expect("relay folder");
+        let relay = relay_folder.join(if cfg!(windows) {
+            "omgcode.exe"
+        } else {
+            "omgcode"
+        });
+        fs::write(&relay, b"").expect("relay file");
+        let sign_ins = root.join("sign-ins");
         Self {
             _temporary: temporary,
             program,
             sign_in,
             root,
+            relay,
+            sign_ins,
         }
+    }
+
+    /// The host Add uses: `search` as `PATH`, this relay, and this parent
+    /// for new sign-in folders.
+    fn host(&self, search: &[&Path]) -> ClaudeCodeHost {
+        ClaudeCodeHost {
+            relay: Some(self.relay.clone()),
+            search_path: Some(std::env::join_paths(search).expect("search path")),
+            home: None,
+            sign_in_root: Some(self.sign_ins.clone()),
+        }
+    }
+
+    fn bin(&self) -> &Path {
+        self.program.parent().expect("program folder")
+    }
+
+    /// The sign-in folders Add left behind.
+    fn created(&self) -> Vec<PathBuf> {
+        fs::read_dir(&self.sign_ins).map_or_else(
+            |_| Vec::new(),
+            |entries| entries.map(|entry| entry.expect("entry").path()).collect(),
+        )
     }
 }
 
 fn open(fixture: &Fixture, default: &str, relay: Option<PathBuf>) -> DesktopService {
+    open_host(
+        fixture,
+        default,
+        ClaudeCodeHost {
+            relay,
+            ..ClaudeCodeHost::default()
+        },
+    )
+}
+
+fn open_host(fixture: &Fixture, default: &str, claude_code: ClaudeCodeHost) -> DesktopService {
     DesktopService::open(DesktopConfig {
         data_root: fixture.data.clone(),
         endpoint: default.to_owned(),
         token_source: TokenSource::Active,
         stream: false,
-        claude_code_relay: relay,
+        claude_code,
     })
     .expect("open desktop service")
 }
@@ -244,30 +302,69 @@ fn send(service: &DesktopService, session: Uuid, endpoint: &str) -> DesktopError
         .expect_err("the turn is refused")
 }
 
-/// Adding records the program and the folder the scripted dialogs chose,
-/// after one confirmation that names both, and grants nothing.
+/// The variables a sign-in may carry: the listed operator folders and the
+/// ones OMGCode sets. Any other, such as an Anthropic key, is never passed.
+const SIGN_IN_VARIABLES: [&str; 16] = [
+    "SystemRoot",
+    "windir",
+    "SystemDrive",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "PATH",
+    "ComSpec",
+    "PATHEXT",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_SAFE_MODE",
+    "DISABLE_AUTOUPDATER",
+    "DISABLE_TELEMETRY",
+    "HOME",
+];
+
+/// Adding finds the program on the search path, skipping one in a workspace
+/// that core refuses, creates a new empty sign-in folder, and asks one
+/// confirmation. On Windows it also grants the four folders and starts
+/// Claude's sign-in once, with `CLAUDE_CONFIG_DIR` set to that folder;
+/// elsewhere the confirmation names the terminal command instead.
 #[test]
-fn a_claude_code_connection_is_added_through_native_dialogs_and_one_confirmation() {
+fn a_claude_code_connection_is_found_created_granted_and_signed_in_after_one_confirmation() {
     let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
     let outside = Outside::new();
+    let planted = workspace
+        .path
+        .join(outside.program.file_name().expect("name"));
+    fs::write(&planted, b"").expect("planted program");
     let default = NoCallServer::start();
-    let service = open(&fixture, &default.endpoint, None);
+    let service = open_host(
+        &fixture,
+        &default.endpoint,
+        outside.host(&[&workspace.path, outside.bin()]),
+    );
     let before = revision(&fixture);
 
-    let prompt = Scripted::dialogs(Some(&outside.program), Some(&outside.sign_in), &[true]);
+    let prompt = Scripted::answers(&[true]);
     let overview = add(&service, &fixture, "claude", &prompt).expect("added");
 
     let shown = prompt.shown();
     assert_eq!(shown.len(), 1);
     assert_eq!(shown[0].title, "Add a Claude Code connection");
-    assert!(shown[0].message.contains("claude"), "{}", shown[0].message);
-    assert!(shown[0].message.contains("sign-in"), "{}", shown[0].message);
+    assert!(
+        shown[0].message.contains("new and empty"),
+        "{}",
+        shown[0].message
+    );
     assert!(
         shown[0].message.contains("OMGCode never reads the sign-in"),
         "{}",
         shown[0].message
     );
-    assert_eq!(revision(&fixture), before + 1);
+    let created = outside.created();
+    assert_eq!(created.len(), 1);
+    let folder = &created[0];
+    assert_eq!(fs::read_dir(folder).expect("listed").count(), 0);
     let profile = overview
         .provider_profiles
         .iter()
@@ -280,48 +377,119 @@ fn a_claude_code_connection_is_added_through_native_dialogs_and_one_confirmation
     // it out; a session chooses it instead.
     assert!(!profile.selectable);
     let setup = profile.claude_code.as_ref().expect("its setup is shown");
-    assert!(setup.program.contains("claude"), "{}", setup.program);
+    assert!(setup.program.contains("bin"), "{}", setup.program);
+    let name = folder.file_name().expect("folder name").to_string_lossy();
     assert!(
-        setup.config_folder.contains("sign-in"),
+        setup.config_folder.contains(name.as_ref()),
         "{}",
         setup.config_folder
     );
-    assert!(setup.grants.is_empty());
+
+    let sign_ins = prompt.sign_ins();
+    if cfg!(windows) {
+        assert!(
+            shown[0].message.contains("claude auth login"),
+            "{}",
+            shown[0].message
+        );
+        assert!(shown[0].message.contains("relay"), "{}", shown[0].message);
+        assert_eq!(setup.grants.len(), 4, "{:?}", setup.grants);
+        assert!(setup.grants.iter().all(|grant| grant.state == "active"));
+        assert_eq!(sign_ins.len(), 1);
+        let sign_in = &sign_ins[0];
+        assert_eq!(&sign_in.folder, folder);
+        assert_eq!(sign_in.arguments, ["auth", "login"]);
+        assert!(
+            sign_in
+                .program
+                .to_string_lossy()
+                .ends_with(&*outside.program.file_name().expect("name").to_string_lossy())
+        );
+        assert!(
+            sign_in
+                .environment
+                .iter()
+                .any(|(name, value)| name == "CLAUDE_CONFIG_DIR" && Path::new(value) == folder)
+        );
+        for (name, _) in &sign_in.environment {
+            assert!(
+                SIGN_IN_VARIABLES.iter().any(|kept| name == *kept),
+                "{name:?} is not a sign-in variable"
+            );
+        }
+        // Revoking removes the grants and the sandbox this test made.
+        revoke(&service, &fixture, "claude", &Scripted::answers(&[true])).expect("revoked");
+    } else {
+        assert!(
+            shown[0].message.contains("CLAUDE_CONFIG_DIR"),
+            "{}",
+            shown[0].message
+        );
+        assert!(setup.grants.is_empty());
+        assert!(sign_ins.is_empty());
+        assert_eq!(revision(&fixture), before + 1);
+    }
 }
 
-/// Each cancelled dialog, a refused folder, and No record nothing. A
-/// refusal comes before the confirmation, so the operator is never asked to
-/// confirm a choice core would refuse.
+/// When no program is found, a native file dialog chooses it; the
+/// confirmation names that program.
+#[test]
+fn a_program_is_chosen_in_a_file_dialog_when_none_is_found() {
+    let fixture = Fixture::new();
+    let outside = Outside::new();
+    let default = NoCallServer::start();
+    let service = open_host(&fixture, &default.endpoint, outside.host(&[]));
+    let before = revision(&fixture);
+
+    let prompt = Scripted::file(Some(&outside.program), &[false]);
+    assert_eq!(
+        add(&service, &fixture, "claude", &prompt)
+            .expect_err("cancelled")
+            .code(),
+        "cancelled"
+    );
+    let shown = prompt.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].message.contains("bin"), "{}", shown[0].message);
+    assert!(prompt.files.borrow().is_empty());
+    assert!(prompt.sign_ins().is_empty());
+    assert!(outside.created().is_empty());
+    assert_eq!(revision(&fixture), before);
+}
+
+/// A cancelled dialog, a refused program or name, and No record nothing
+/// and leave no sign-in folder. A refusal comes before the confirmation, so
+/// the operator is never asked to confirm a choice core would refuse.
 #[test]
 fn adding_a_claude_code_connection_records_nothing_when_cancelled_or_refused() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace("project", text_only());
     let outside = Outside::new();
     let default = NoCallServer::start();
-    let service = open(&fixture, &default.endpoint, None);
     let before = revision(&fixture);
 
-    let no_program = Scripted::dialogs(None, Some(&outside.sign_in), &[]);
+    let nothing_found = open_host(&fixture, &default.endpoint, outside.host(&[]));
+    let no_program = Scripted::file(None, &[]);
     assert_eq!(
-        add(&service, &fixture, "claude", &no_program)
+        add(&nothing_found, &fixture, "claude", &no_program)
             .expect_err("cancelled")
             .code(),
         "cancelled"
     );
-    let no_folder = Scripted::dialogs(Some(&outside.program), None, &[]);
-    assert_eq!(
-        add(&service, &fixture, "claude", &no_folder)
-            .expect_err("cancelled")
-            .code(),
-        "cancelled"
-    );
-    // A sign-in folder inside a workspace could be read by a model-run
+    // A program inside a workspace could be replaced by a model-run
     // program, so core refuses it before any confirmation.
-    let inside = Scripted::dialogs(Some(&outside.program), Some(&workspace.path), &[]);
-    let refused = add(&service, &fixture, "claude", &inside).expect_err("refused");
+    let planted = workspace
+        .path
+        .join(outside.program.file_name().expect("name"));
+    fs::write(&planted, b"").expect("planted program");
+    let inside = Scripted::file(Some(&planted), &[]);
+    let refused = add(&nothing_found, &fixture, "claude", &inside).expect_err("refused");
     assert_eq!(refused.code(), "control");
     assert!(inside.shown().is_empty());
-    let declined = Scripted::dialogs(Some(&outside.program), Some(&outside.sign_in), &[false]);
+    drop(nothing_found);
+
+    let service = open_host(&fixture, &default.endpoint, outside.host(&[outside.bin()]));
+    let declined = Scripted::answers(&[false]);
     assert_eq!(
         add(&service, &fixture, "claude", &declined)
             .expect_err("cancelled")
@@ -329,17 +497,70 @@ fn adding_a_claude_code_connection_records_nothing_when_cancelled_or_refused() {
         "cancelled"
     );
     assert_eq!(declined.shown().len(), 1);
-    // An invalid name is core's refusal too, also before the confirmation.
-    let bad_name = Scripted::dialogs(Some(&outside.program), Some(&outside.sign_in), &[]);
+    assert!(declined.sign_ins().is_empty());
+    // An invalid name is core's refusal too, before the confirmation and
+    // without a file dialog, although a program was found.
+    let bad_name = Scripted::answers(&[]);
     assert_eq!(
         add(&service, &fixture, "no spaces", &bad_name)
             .expect_err("refused")
             .code(),
         "control"
     );
-
+    assert!(outside.created().is_empty());
     assert_eq!(revision(&fixture), before);
     assert_eq!(profile_count(&fixture), 0);
+}
+
+/// On Windows a connection is unusable without a grant of the relay folder,
+/// so Add is refused before anything is created when no relay sits beside
+/// the application.
+#[cfg(windows)]
+#[test]
+fn adding_on_windows_needs_the_relay() {
+    let fixture = Fixture::new();
+    let outside = Outside::new();
+    let default = NoCallServer::start();
+    let service = open_host(
+        &fixture,
+        &default.endpoint,
+        ClaudeCodeHost {
+            relay: None,
+            ..outside.host(&[outside.bin()])
+        },
+    );
+    let refused = add(&service, &fixture, "claude", &Scripted::answers(&[])).expect_err("refused");
+    assert_eq!(refused.code(), "invalid_request");
+    assert!(!outside.sign_ins.exists());
+    assert_eq!(profile_count(&fixture), 0);
+}
+
+/// On Windows a sign-in that does not start leaves the connection added and
+/// granted, and the error names the terminal command that signs in instead.
+#[cfg(windows)]
+#[test]
+fn a_sign_in_that_does_not_start_names_the_terminal_command() {
+    let fixture = Fixture::new();
+    let outside = Outside::new();
+    let default = NoCallServer::start();
+    let service = open_host(&fixture, &default.endpoint, outside.host(&[outside.bin()]));
+    let prompt = Scripted {
+        sign_in_failure: Some("on purpose".to_owned()),
+        ..Scripted::answers(&[true])
+    };
+    let error = add(&service, &fixture, "claude", &prompt).expect_err("not started");
+    assert_eq!(error.code(), "control");
+    for part in ["on purpose", "CLAUDE_CONFIG_DIR", "auth login"] {
+        assert!(
+            error.message().contains(part),
+            "{part}: {}",
+            error.message()
+        );
+    }
+    assert_eq!(prompt.sign_ins().len(), 1);
+    assert_eq!(outside.created().len(), 1);
+    assert_eq!(profile_count(&fixture), 1);
+    revoke(&service, &fixture, "claude", &Scripted::answers(&[true])).expect("revoked");
 }
 
 /// The whole session path: the choice lists the connection by its label, is

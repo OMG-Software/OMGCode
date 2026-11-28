@@ -32,6 +32,12 @@ the desktop must handle:
 - `claude` has no model-list request, and it takes only the efforts `low`
   to `max`.
 
+Adding the connection the way the CLI does meant choosing the `claude`
+program and a sign-in folder by hand and signing in from a terminal first.
+An operator who chose Claude Code expected the desktop to find the installed
+program and let them sign in, as the `settings` window does for ChatGPT
+([ADR-0093](0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)).
+
 ## Decision
 
 1. **A per-session choice only.** The `main` window's per-session provider
@@ -90,23 +96,77 @@ the desktop must handle:
    shutdown wait is at least core's `CLAUDE_CODE_TURN_STOP_WAIT` of 30
    seconds instead of the shell's five, so the cancel can stop the process
    tree and observe its end.
-7. **Add, grant, and revoke in `settings`.** The `settings` window adds a
-   Claude Code connection: Rust opens a native file dialog for the `claude`
-   program and a native folder dialog for the sign-in folder, shows one
-   native confirmation that names both, and calls core's
-   `add_claude_code_profile`, which keeps every check of ADR-0109 decision 2.
-   Signing in stays in a terminal (`claude auth login` with
-   `CLAUDE_CONFIG_DIR` set to the folder); the window shows that command and
-   OMGCode never runs it. On Windows the window grants the connection's
-   container its four folders, after a confirmation that names the program,
-   sign-in, runtime, and relay folders, through core's `grant_claude_code`
-   with the relay folder of decision 3. It revokes them through
-   `revoke_claude_code_grants` after a confirmation and waits up to 30
-   seconds for the connection's turns to end, as the CLI does. Removing a
-   connection is still refused while it holds grants.
+7. **Add finds the program, creates the folder, grants, and starts the
+   sign-in.** **Add connection** for Claude Code in the `settings` window
+   takes only a name.
+   - *The program.* Rust looks for `claude` (`claude.exe` on Windows) in
+     each absolute folder of the operator's `PATH`, in order, and then in
+     the native installer's folder `~/.local/bin` (and `~/.claude/local`
+     outside Windows), through core's `claude_code_program_candidates`,
+     which opens and runs nothing. It keeps the first file that core's
+     `check_claude_code_profile` accepts, so a `claude` in the development
+     root or a workspace is skipped. Only when no such file exists does a
+     native file dialog ask for the program. When files exist but core
+     refuses each, the first refusal is reported, so an invalid name is not
+     hidden behind a dialog.
+   - *The sign-in folder.* Rust creates the connection's own folder, new,
+     empty, and named at random, under `omgcode-claude-code` in the
+     per-user local data folder (`%LOCALAPPDATA%` on Windows), which is not
+     application storage. A cancelled or refused add removes it.
+   - *One confirmation, then add and grant.* One native confirmation names
+     the program, the folder, and on Windows the folders the connection's
+     container is granted. Core's `add_claude_code_profile` records the
+     connection with every check of ADR-0109 decision 2, and on Windows
+     `grant_claude_code` grants the four folders with the relay of decision
+     3. On Windows Add is refused before anything is created when there is
+     no relay. A grant that fails leaves the connection recorded, and the
+     error names the command that signs in from a terminal.
+   - *Claude's own sign-in.* On Windows Rust then starts the recorded
+     program as `claude auth login` in a console window of its own, outside
+     the container, with no inherited handle, the folder as its working
+     folder and as `CLAUDE_CONFIG_DIR`, and an environment built from
+     nothing: the system and profile folder variables, a `PATH` of the
+     system folders, `ComSpec`, `PATHEXT`, `CLAUDE_CODE_SAFE_MODE`,
+     `DISABLE_AUTOUPDATER`, and `DISABLE_TELEMETRY`. The operator finishes it in the browser. OMGCode
+     waits for nothing, reads nothing in the folder, and never sees the
+     credential. This amends ADR-0109 decision 2 for the desktop only in
+     that OMGCode starts Claude's own sign-in program. Outside Windows the
+     confirmation names the command to run in a terminal instead. A sign-in
+     that does not start leaves the connection recorded and names that
+     command.
+   - *Only a new folder.* The sign-in starts only for the folder Add has
+     just created. Once a turn has run, the container could have written the
+     folder, and the sign-in runs outside the container. To sign in again,
+     the operator revokes the grants, removes the connection, and adds it
+     again.
+   - *Grant and revoke.* **Grant folders** grants the four folders again
+     after a revocation, after a confirmation that names them. **Revoke
+     folders** revokes them through `revoke_claude_code_grants` after a
+     confirmation and waits up to 30 seconds for the connection's turns to
+     end, as the CLI does. Removing a connection is still refused while it
+     holds grants.
 
 ## Alternatives considered
 
+- **Ask for the program and the sign-in folder in dialogs, and sign in from
+  a terminal first.** The first form of decision 7. Rejected: it asked the
+  operator for a program the desktop can find and for a terminal step the
+  desktop can start.
+- **Offer Sign in again on the connection's row.** Rejected: by then the
+  connection's container may have written the folder, for example a
+  settings file naming a command that a sign-in outside the container would
+  run. Safe mode switches off hooks and plugins, but it is not documented to
+  ignore every setting.
+- **Run the sign-in in the connection's container.** Rejected: the sign-in
+  needs the operator's browser, and a browser sign-in that returns to a
+  local callback is not received by an AppContainer without a loopback
+  exemption.
+- **Check `claude auth status` first and skip a signed-in folder.** Not
+  done: the folder is new, so it is never signed in, and the check would
+  start the program once more.
+- **Use the operator's own `~/.claude` sign-in.** Rejected: ADR-0109 keeps
+  each connection's sign-in in a folder of its own, because the container
+  can read and write it.
 - **Keep the connection on the CLI.** Rejected: the operator chooses the
   provider in the desktop, and the CLI-only rule hid a recorded connection
   there without saying why.
@@ -145,9 +205,23 @@ the desktop must handle:
   the optional `profile_id`, so other records keep their earlier shape; a
   build before 0.74.0 finds a file with one unreadable and treats it as
   empty, so its sessions follow the default connection there.
+- Add starts the operator's `claude` once outside every sandbox, for
+  Claude's own sign-in, as a terminal would. It is the program the
+  confirmation names; a `claude` earlier on `PATH` than the installed one is
+  the one chosen, as in a terminal.
+- A removed connection's sign-in folder stays under `omgcode-claude-code`,
+  still signed in, until the operator deletes it. Nothing records it.
+- A development root that contains the per-user local data folder makes
+  core refuse every new sign-in folder, and Add reports that refusal.
+- `claude auth status --json` of `claude` 2.1.325 on Windows, run with the
+  sign-in's environment and a new folder, reported that folder as its
+  configuration directory and the connection as not signed in, and wrote
+  its own state there. OMGCode's tests record the sign-in instead of
+  starting it, and a platform test starts a fixture in a console window of
+  its own. No Claude sign-in was completed through OMGCode.
 - No signed-in turn of the real `claude` has run in the desktop or on the
-  CLI. The desktop tests drive the choice, the confirmation, and the
-  refusals before a process starts.
+  CLI. The desktop tests drive the add, the choice, the confirmations, and
+  the refusals before a process starts.
 
 ## References
 
@@ -155,6 +229,7 @@ the desktop must handle:
 - [ADR-0066](0066-choose-the-chat-model-from-the-local-servers-model-list.md)
 - [ADR-0071](0071-choose-the-provider-and-model-per-session-and-add-ollama-cloud.md)
 - [ADR-0089](0089-choose-the-provider-and-model-in-the-side-panel-footer.md)
+- [ADR-0093](0093-sign-in-with-chatgpt-and-use-the-plan-through-the-responses-api.md)
 - [ADR-0102](0102-choose-a-reasoning-effort-per-session.md)
 - [ADR-0109](0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)
 - [Desktop interface](../desktop-interface.md)

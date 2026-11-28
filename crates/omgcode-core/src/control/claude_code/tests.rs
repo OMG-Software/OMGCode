@@ -1943,3 +1943,77 @@ mod windows {
             .expect("the root changes once the record is gone");
     }
 }
+
+/// The search lists each absolute `PATH` folder in order, then the native
+/// installer's folders, once each, and skips relative entries (ADR-0111).
+#[test]
+fn program_candidates_follow_the_path_then_the_installer_folders() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let first = directory.path().join("first");
+    let second = directory.path().join("second");
+    let home = directory.path().join("home");
+    let search = std::env::join_paths([
+        first.clone(),
+        PathBuf::from("relative"),
+        second.clone(),
+        first.clone(),
+        home.join(".local").join("bin"),
+    ])
+    .expect("search path");
+    let candidates = claude_code_program_candidates(Some(&search), Some(&home));
+    let mut expected = vec![
+        first.join(PROGRAM_NAME),
+        second.join(PROGRAM_NAME),
+        home.join(".local").join("bin").join(PROGRAM_NAME),
+    ];
+    if !cfg!(windows) {
+        expected.push(home.join(".claude").join("local").join(PROGRAM_NAME));
+    }
+    assert_eq!(candidates, expected);
+    assert!(claude_code_program_candidates(None, Some(Path::new("relative-home"))).is_empty());
+    assert!(claude_code_program_candidates(None, None).is_empty());
+}
+
+/// A `PATH` of thousands of folders yields a bounded list.
+#[test]
+fn program_candidates_are_bounded() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let folders = (0..1000).map(|index| directory.path().join(index.to_string()));
+    let search = std::env::join_paths(folders).expect("search path");
+    assert_eq!(
+        claude_code_program_candidates(Some(&search), None).len(),
+        MAX_PROGRAM_CANDIDATES
+    );
+}
+
+/// Discovery keeps a candidate only when core accepts it: a `claude` in a
+/// workspace is skipped even when it comes first on `PATH`.
+#[test]
+fn a_program_in_a_workspace_is_never_a_usable_candidate() {
+    let scene = Scene::new();
+    let store = scene.store();
+    let planted = scene.workspace.join(PROGRAM_NAME);
+    fs::write(&planted, b"").expect("planted program");
+    let search = std::env::join_paths([
+        scene.workspace.clone(),
+        scene
+            .program
+            .parent()
+            .expect("program folder")
+            .to_path_buf(),
+    ])
+    .expect("search path");
+    let usable: Vec<PathBuf> = claude_code_program_candidates(Some(&search), None)
+        .into_iter()
+        .filter(|program| {
+            store
+                .check_claude_code_profile(&ClaudeCodeDeclaration {
+                    name: "claude".to_owned(),
+                    program: program.clone(),
+                    config_folder: scene.sign_in.clone(),
+                })
+                .is_ok()
+        })
+        .collect();
+    assert_eq!(usable, vec![scene.program.clone()]);
+}

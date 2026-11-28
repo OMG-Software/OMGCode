@@ -89,6 +89,7 @@
 
 mod approvals;
 mod chat;
+mod claude_code_sign_in;
 mod context_breakdown;
 mod data_folder;
 mod error;
@@ -123,6 +124,7 @@ use omgcode_core::control::ProviderKind;
 use omgcode_core::session_index::SessionIndex;
 use uuid::Uuid;
 
+pub use self::claude_code_sign_in::{ClaudeCodeHost, ClaudeCodeSignIn, start_claude_code_sign_in};
 pub use self::error::DesktopError;
 pub use self::events::ChatEventSink;
 use self::events::EventHub;
@@ -207,12 +209,10 @@ pub struct DesktopConfig {
     /// provisional text to the subscriber (ADR-0049). When `false`, turns send
     /// non-streaming requests and only `finished` events are pushed.
     pub stream: bool,
-    /// The `omgcode` executable a Claude Code turn runs as its MCP relay
-    /// (ADR-0111). The shell passes the one in its own executable's folder;
-    /// on Windows the connection's container needs a grant for that folder.
-    /// `None` fails every Claude Code turn with `claude_code_unusable`
-    /// before any process starts.
-    pub claude_code_relay: Option<PathBuf>,
+    /// The relay, program search, and sign-in folder for Claude Code
+    /// connections (ADR-0111). [`ClaudeCodeHost::default`] has none, so a
+    /// Claude Code turn fails with `claude_code_unusable` and Add is refused.
+    pub claude_code: ClaudeCodeHost,
 }
 
 /// A replacement token supplier for an embedder or a test that must avoid the
@@ -323,8 +323,8 @@ struct Inner {
     token: TokenResolver,
     /// Whether turns send streamed requests ([`DesktopConfig::stream`]).
     stream: bool,
-    /// The Claude Code relay ([`DesktopConfig::claude_code_relay`]).
-    claude_code_relay: Option<PathBuf>,
+    /// The Claude Code host ([`DesktopConfig::claude_code`]).
+    claude_code: ClaudeCodeHost,
     index: Mutex<IndexState>,
     turns: Mutex<TurnTable>,
     reviews: Mutex<ReviewTokens>,
@@ -409,7 +409,7 @@ impl DesktopService {
                 endpoint: config.endpoint,
                 token,
                 stream: config.stream,
-                claude_code_relay: config.claude_code_relay,
+                claude_code: config.claude_code,
                 index: Mutex::new(IndexState::new(index)),
                 turns: Mutex::new(TurnTable::default()),
                 reviews: Mutex::new(ReviewTokens::default()),

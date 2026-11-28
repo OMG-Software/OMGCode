@@ -542,6 +542,8 @@ describe("mock backend", () => {
     })) as SettingsOverview;
     const recorded = added.provider_profiles.find((profile) => profile.name === "claude");
     expect(recorded).toMatchObject({ kind: "claude_code", selectable: false, endpoint: null });
+    // On Windows Add also grants the four folders, as Rust does (ADR-0111).
+    expect(recorded?.claude_code?.grants).toHaveLength(added.container_grants_supported ? 4 : 0);
     await expect(
       invoke("settings_select_connection", { revision: added.revision, profile: "claude" }),
     ).rejects.toMatchObject({ code: "control" });

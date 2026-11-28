@@ -72,7 +72,7 @@ fn active_service(fixture: &Fixture, default: &str) -> DesktopService {
         endpoint: default.to_owned(),
         token_source: TokenSource::Active,
         stream: false,
-        claude_code_relay: None,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("open desktop service")
 }
@@ -234,7 +234,7 @@ fn a_declined_or_fixed_choice_changes_nothing() {
         endpoint: unused_endpoint(),
         token_source: TokenSource::Environment,
         stream: false,
-        claude_code_relay: None,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("fixed service");
     let prompt = Answers::with(&[]);
@@ -452,7 +452,7 @@ fn removing_the_selected_profile_under_a_launch_argument_asks_nothing() {
         endpoint: unused_endpoint(),
         token_source: TokenSource::Environment,
         stream: false,
-        claude_code_relay: None,
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::default(),
     })
     .expect("fixed service");
     let quiet = Answers::with(&[]);

@@ -197,13 +197,20 @@ function chatGptButton(profile: ProviderProfileView, { submit, actions }: Sectio
 export const PROGRAM_CONNECTION_NOTE =
   "Runs your signed-in Claude Code CLI. Choose it for a session in the main window's provider box; it cannot be the default connection. Removing it ends its running turns.";
 
-/** What the add form says about a Claude Code connection before Rust's dialogs open. */
+/** What the add form says about a Claude Code connection before Rust's checks and confirmation. */
 export const CLAUDE_CODE_ADD_NOTE =
-  "After Add connection, choose the claude program (claude.exe on Windows) and the folder you signed in to. Sign in first from a terminal: set CLAUDE_CONFIG_DIR to that folder and run claude auth login. OMGCode never reads the sign-in.";
+  "Add connection finds your claude program (claude.exe on Windows), or asks for it if it is not installed in the usual place, creates the connection's own sign-in folder, and asks you once to confirm. On Windows it also grants the connection's sandbox its folders and opens Claude's own sign-in in a new window: finish it in your browser. Elsewhere, sign in from a terminal with the command the confirmation shows. OMGCode never reads the sign-in.";
 
-/** Why a Claude Code connection on Windows needs its folders granted before a turn. */
+/** Why a Claude Code connection on Windows has its folders granted, and how to grant them again. */
 export const CLAUDE_CODE_GRANT_NOTE =
-  "On Windows the claude program runs in its own sandbox. Grant its folders before a session uses it; the relay is the omgcode program beside this application.";
+  "On Windows the claude program runs in its own sandbox. Add grants its folders; after revoking them, grant them again before a session uses it. The relay is the omgcode program beside this application.";
+
+/**
+ * How to sign a Claude Code connection in again. OMGCode opens Claude's sign-in only for the
+ * folder Add has just created, because the sign-in runs outside the sandbox (ADR-0111).
+ */
+export const CLAUDE_CODE_SIGN_IN_AGAIN_NOTE =
+  "To sign in again, revoke its folders, remove the connection, and add it again: OMGCode opens Claude's sign-in only for a new sign-in folder, because the sign-in runs outside the sandbox.";
 
 const GRANT_ROLE_NAMES: Readonly<Record<ClaudeCodeView["grants"][number]["role"], string>> = {
   program: "Program folder",
@@ -221,6 +228,7 @@ function claudeCodeDetails(
   const lines = [
     el("div", { class: "row-meta", text: `Program: ${setup.program}` }),
     el("div", { class: "row-meta", text: `Sign-in folder: ${setup.config_folder}` }),
+    el("div", { class: "row-meta", text: CLAUDE_CODE_SIGN_IN_AGAIN_NOTE }),
   ];
   if (!overview.container_grants_supported) {
     return lines;

@@ -115,7 +115,7 @@ fn open_service(args: LaunchArgs) -> Result<DesktopService, String> {
         endpoint,
         token_source,
         stream: args.stream,
-        claude_code_relay: claude_code_relay(),
+        claude_code: omgcode_app::desktop::ClaudeCodeHost::for_operator(claude_code_relay()),
     })
     .map_err(|error| format!("{}: {}", error.code(), error.message()))
 }

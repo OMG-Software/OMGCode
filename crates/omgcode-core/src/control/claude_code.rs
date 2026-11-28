@@ -298,6 +298,58 @@ pub fn claude_code_runtime_folder(data_root: &Path, profile_id: Uuid) -> PathBuf
         .join(profile_id.simple().to_string())
 }
 
+/// The file name of the `claude` program on this platform.
+pub const CLAUDE_CODE_PROGRAM_NAME: &str = if cfg!(windows) {
+    "claude.exe"
+} else {
+    "claude"
+};
+
+/// The most candidates [`claude_code_program_candidates`] returns, so a very
+/// long `PATH` cannot make the search unbounded.
+const MAX_PROGRAM_CANDIDATES: usize = 128;
+
+/// Where the `claude` program may be installed, most likely first
+/// (ADR-0111): [`CLAUDE_CODE_PROGRAM_NAME`] in each absolute folder of
+/// `search_path`, the operator's `PATH`, in order, then in the native
+/// installer's folders under `home`. Relative and empty `PATH` entries are
+/// skipped, and each candidate appears once.
+///
+/// Nothing is opened or run here. A caller keeps the first candidate that
+/// [`ControlStore::check_claude_code_profile`] accepts, so a program that is
+/// not a regular file, or whose folder is too broad or overlaps storage, the
+/// development root, or a workspace, is never chosen.
+pub fn claude_code_program_candidates(
+    search_path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    let listed = search_path
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .filter(|folder| folder.is_absolute());
+    let installed = home
+        .filter(|home| home.is_absolute())
+        .into_iter()
+        .flat_map(|home| {
+            let mut folders = vec![home.join(".local").join("bin")];
+            if !cfg!(windows) {
+                folders.push(home.join(".claude").join("local"));
+            }
+            folders
+        });
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for folder in listed.chain(installed) {
+        let candidate = folder.join(CLAUDE_CODE_PROGRAM_NAME);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+        if candidates.len() == MAX_PROGRAM_CANDIDATES {
+            break;
+        }
+    }
+    candidates
+}
+
 impl ControlStore {
     /// Run every check [`Self::add_claude_code_profile`] applies, except the
     /// revision, without recording anything.

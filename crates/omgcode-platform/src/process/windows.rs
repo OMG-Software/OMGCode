@@ -47,13 +47,13 @@ use windows_sys::Win32::System::SystemServices::{
     JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT, JOB_OBJECT_MSG_JOB_MEMORY_LIMIT, SE_GROUP_ENABLED,
 };
 use windows_sys::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
-    DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
-    InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+    GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST,
     PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess,
+    UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
 use super::streaming::Launched;
@@ -1002,6 +1002,55 @@ fn create_suspended(
             thread: OwnedHandle::from_raw_handle(info.hThread),
         }
     })
+}
+
+/// Start `spec` in a new console window with no job, no inherited handle, and
+/// no standard handle, so the program reads and writes that console, then
+/// close the process and thread handles without waiting. The spec was
+/// validated by the caller.
+#[allow(unsafe_code)]
+pub(super) fn start_in_new_console(spec: &ProcessSpec) -> Result<(), ProcessError> {
+    let application = wide_nul(spec.program.as_os_str());
+    let mut command_line = command_line(spec)?;
+    let environment = environment_block(spec);
+    let directory = wide_nul(spec.working_directory.as_os_str());
+    let startup = STARTUPINFOW {
+        cb: u32::try_from(size_of::<STARTUPINFOW>())
+            .map_err(|_| ProcessError::Spawn(io::Error::other("startup structure is too large")))?,
+        ..STARTUPINFOW::default()
+    };
+    let mut info = PROCESS_INFORMATION::default();
+    // SAFETY: every string is NUL-terminated UTF-16 that outlives the call;
+    // the command line is mutable as required; the environment block ends in
+    // two NULs; the startup structure is initialized and sets no flag, so no
+    // standard handle is passed, and no handle is inherited.
+    let result = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            null(),
+            null(),
+            0,
+            CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
+            environment.as_ptr().cast(),
+            directory.as_ptr(),
+            &raw const startup,
+            &raw mut info,
+        )
+    };
+    if result == 0 {
+        return Err(ProcessError::Spawn(io::Error::last_os_error()));
+    }
+    // SAFETY: on success both handles are new and owned here. Closing them
+    // does not end the process.
+    let (process, thread) = unsafe {
+        (
+            OwnedHandle::from_raw_handle(info.hProcess),
+            OwnedHandle::from_raw_handle(info.hThread),
+        )
+    };
+    drop((process, thread));
+    Ok(())
 }
 
 #[allow(unsafe_code)]
