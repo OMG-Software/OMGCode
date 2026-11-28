@@ -46,6 +46,9 @@ pub enum ClaudeCodeFailure {
     /// removed it while the turn ran, or the settings could not be checked;
     /// the process was ended.
     Withdrawn,
+    /// The turn records of every connection are full, so the turn started
+    /// no process.
+    TurnRecordsFull,
 }
 
 impl ClaudeCodeFailure {
@@ -57,6 +60,7 @@ impl ClaudeCodeFailure {
             Self::Protocol => "claude_code_protocol",
             Self::Failed => "claude_code_failed",
             Self::Withdrawn => "claude_code_withdrawn",
+            Self::TurnRecordsFull => "claude_code_turn_records_full",
         }
     }
 
@@ -77,6 +81,9 @@ impl ClaudeCodeFailure {
             }
             Self::Withdrawn => {
                 "the settings revoked a grant of this Claude Code connection or removed it during the turn, or could not be checked; the process was ended"
+            }
+            Self::TurnRecordsFull => {
+                "the Claude Code turn records are full, so no process was started; for each connection, check that no `claude` process of it remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge <profile id>`; keep a connection's records while that cannot be confirmed"
             }
         }
     }

@@ -960,13 +960,17 @@ and a tool turn keeps that process for all its rounds.
   observed ended and its relay workers stopped; a worker still running
   then keeps the lock until it ends. Under that lock the turn first writes
   and syncs a turn record, `claude-code/<profile id>.<turn id>.unconfirmed`,
-  that names the connection and its sign-in folder, and it removes the
-  record only after that observed end. A lock whose tree's end was not
+  that names the connection, its sign-in folder, and the program and relay
+  folders the turn reads, and it removes the record only after that
+  observed end. A lock whose tree's end was not
   confirmed, also of a tree the launch could not stop, stays held until the
   OMGCode process exits, and its record outlives that process. While a
   record exists, every wait below fails with a `control` error, and the
   record reserves the sign-in folder, also once the connection is removed,
-  so no new connection can record an overlapping folder. Before running
+  so no new connection can record an overlapping folder. It also reserves
+  the program and relay folders, which on Linux no grant records: no other
+  connection's sign-in folder that overlaps either, or with either moved
+  since, is recorded while it exists, and a separate one still is. Before running
   `omgcode workspace claude-code-acknowledge <profile id>`, check the
   connection's entire `claude` process tree, including its MCP relays and
   their descendants; if you cannot confirm that the tree ended, keep the
@@ -976,15 +980,19 @@ and a tool turn keeps that process for all its rounds.
   counts them and writes its own under one exclusive lock,
   `claude-code/turn-records.lock`, so two turns cannot both take the last
   free record, and one that waits five seconds for that lock starts
-  nothing. A turn that finds that many starts nothing, a sign-in folder check that finds
+  nothing. A turn that finds that many starts nothing and fails with
+  `claude_code_turn_records_full`, whose message names the acknowledgement
+  and the process-tree check before it, a sign-in folder check that finds
   more fails with a `control` error that names the acknowledgement, and the
   acknowledgement still clears a connection's records while the inventory
   is full. After it wrote its record and before the launch, the turn
   checks every settings state recorded since it resolved the connection, so
   a removal that this check misses finds the record. While the
   process runs a watcher checks each later state every 100 ms and once more
-  as it stops. A state that removes the connection or, on Windows, leaves a
-  role without an active grant ends the tree, and the turn fails with
+  as it stops. A state that removes the connection, on Windows leaves a
+  role without an active grant, or records another connection's sign-in
+  folder in the turn's program or relay folder ends the tree, and the turn
+  fails with
   `claude_code_withdrawn`; unreadable settings and a watcher that panicked
   do the same. `workspace claude-code-revoke`, `workspace
   provider-profile-remove`, and the `settings` window's removal record the
@@ -1007,9 +1015,13 @@ and a tool turn keeps that process for all its rounds.
   deadline once, just before its record, and that sample decides: either
   one that came first, also one the watcher had not yet seen, fails the
   write, and neither one after it fails a write recorded in time. Calls go
-  to the turn runtime only while no queued output that ends the turn (a
-  malformed line, the end of the output, or input that never fully
-  arrived) waits behind them. The main agent's text has an 8 MiB budget. The Linux folder has a random
+  to the turn runtime only while no queued output that the turn would
+  refuse waits behind them: a malformed line, the end of the output, input
+  that never fully arrived, a second init report, a tool or message naming
+  a tool the lockdown refuses, a failed sign-in, a result while the calls
+  would be held, or text past the budget once added to the text queued
+  before it. Status output and accepted text and messages do not hold the
+  calls back. The main agent's text has an 8 MiB budget. The Linux folder has a random
   name and is created exclusively under `XDG_RUNTIME_DIR`, or `/tmp` when
   that is unset, relative, or too long, because a socket path must fit in
   107 bytes and one beneath application storage does not.

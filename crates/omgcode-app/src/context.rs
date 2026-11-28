@@ -240,6 +240,7 @@ mod tests {
             ClaudeCodeFailure::Protocol,
             ClaudeCodeFailure::Failed,
             ClaudeCodeFailure::Withdrawn,
+            ClaudeCodeFailure::TurnRecordsFull,
         ] {
             let error = compaction_error(
                 ContextError::Provider(ProviderError::ClaudeCode(failure)),

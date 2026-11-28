@@ -20,8 +20,8 @@ use super::{
     UNCONFIRMED_TURNS, WritePoint, WriteRace, raced_write, spawned,
 };
 use crate::control::{ClaudeCodeWatch, ControlError, wait_for_claude_code_turns};
-use crate::provider::ProviderError;
 use crate::provider::claude_code::stream::parse_line;
+use crate::provider::{MAX_STREAM_BYTES, ProviderError};
 use crate::turn::CancelToken;
 
 const TOOL: &str = "workspace_list_directory";
@@ -86,6 +86,15 @@ fn queue_announced_call(sender: &SyncSender<Event>) {
                         "_meta": { "claudecode/toolUseId": "toolu_1" } },
         })))
         .expect("queue the call");
+}
+
+/// A text delta of the main agent.
+fn text_delta(text: &str) -> Event {
+    stdout(&json!({
+        "type": "stream_event", "parent_tool_use_id": null,
+        "event": { "type": "content_block_delta", "index": 0,
+                   "delta": { "type": "text_delta", "text": text } },
+    }))
 }
 
 fn result(text: &str) -> Event {
@@ -292,12 +301,33 @@ fn a_cancellation_right_behind_a_batchs_last_event_retires_its_call() {
 }
 
 /// A call that is ready at a batch's end is not handed off while output
-/// that ends the turn waits behind the batch: the round handles that output
-/// first and fails, and the call never reaches the runtime. Informational
-/// output waiting there does not hold the call back.
+/// that the round refuses waits behind the batch: output that ends the turn,
+/// a second init report, a tool or message the lockdown refuses, a failed
+/// sign-in, a result while the call would be held, or text past the budget.
+/// The round handles that output first and fails, and the call never
+/// reaches the runtime. A status frame, input that reached the process, and
+/// accepted text or messages waiting there do not hold the call back.
 #[test]
-fn queued_output_that_ends_the_turn_fails_it_before_a_ready_call_is_handed_off() {
+fn queued_output_that_the_round_refuses_fails_it_before_a_ready_call_is_handed_off() {
     let status = json!({ "type": "system", "subtype": "status" });
+    let init: Value = serde_json::from_str(
+        r#"{"type":"system","subtype":"init","cwd":"/w","session_id":"s1","tools":["mcp__omgcode__workspace_list_directory"],"mcp_servers":[{"name":"omgcode","status":"connected","source":"dynamic"}],"model":"claude-haiku-5-5","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.325","agents":[],"skills":[],"plugins":[],"uuid":"u1"}"#,
+    )
+    .expect("init report");
+    let tool_start = |name: &str| {
+        stdout(&json!({
+            "type": "stream_event", "parent_tool_use_id": null,
+            "event": { "type": "content_block_start", "index": 1,
+                       "content_block": { "type": "tool_use", "id": "toolu_2", "name": name, "input": {} } },
+        }))
+    };
+    let message = |content: Value| {
+        stdout(&json!({
+            "type": "assistant", "parent_tool_use_id": null,
+            "message": { "id": "msg_2", "content": content },
+        }))
+    };
+    let offered = format!("{TOOL_PREFIX}{TOOL}");
     let cases = [
         (
             "malformed",
@@ -310,10 +340,44 @@ fn queued_output_that_ends_the_turn_fails_it_before_a_ready_call_is_handed_off()
             Event::InputWritten(false),
             Some(ClaudeCodeFailure::Failed),
         ),
+        (
+            "second init",
+            stdout(&init),
+            Some(ClaudeCodeFailure::Protocol),
+        ),
+        (
+            "unoffered tool start",
+            tool_start("Bash"),
+            Some(ClaudeCodeFailure::Lockdown),
+        ),
+        (
+            "unoffered tool use",
+            message(json!([{ "type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {} }])),
+            Some(ClaudeCodeFailure::Lockdown),
+        ),
+        (
+            "failed sign-in",
+            stdout(&json!({
+                "type": "assistant", "parent_tool_use_id": null, "error": "authentication_failed",
+                "message": { "content": [{ "type": "text", "text": "Not logged in" }] },
+            })),
+            Some(ClaudeCodeFailure::NotSignedIn),
+        ),
+        ("result", result("done"), Some(ClaudeCodeFailure::Protocol)),
         ("status", stdout(&status), None),
+        ("input written", Event::InputWritten(true), None),
+        ("text", text_delta("Hel"), None),
+        ("offered tool start", tool_start(&offered), None),
+        (
+            "text message",
+            message(json!([{ "type": "text", "text": "Looking" }])),
+            None,
+        ),
     ];
     for (label, output, failure) in cases {
-        assert_eq!(output.ends_the_turn(), failure.is_some(), "{label}");
+        if !matches!(output, Event::Stdout(Ok(_))) {
+            assert_eq!(output.ends_the_turn(), failure.is_some(), "{label}");
+        }
         let runtime = TempDir::new().expect("runtime folder");
         let (mut session, sender) = session(runtime.path());
         let cancel = CancelToken::new();
@@ -353,6 +417,46 @@ fn queued_output_that_ends_the_turn_fails_it_before_a_ready_call_is_handed_off()
         }
         drop(sender);
     }
+}
+
+/// Text kept back is judged against the budgets as they would stand once
+/// it was handled: a delta or a message's text that would pass the limit,
+/// counting the text kept back before it, holds the calls back, and text
+/// just within it does not.
+#[test]
+fn kept_back_text_is_judged_against_the_budgets_as_they_would_stand() {
+    let runtime = TempDir::new().expect("runtime folder");
+    let (mut session, _sender) = session(runtime.path());
+    session.streamed_bytes = MAX_STREAM_BYTES - 2;
+    session.deferred.push_back(text_delta("a"));
+    assert!(
+        !session.kept_back_output_fails(),
+        "one byte below the limit"
+    );
+    session.deferred.push_back(text_delta("bc"));
+    assert!(
+        session.kept_back_output_fails(),
+        "with the earlier delta, past it"
+    );
+
+    session.deferred.clear();
+    session.streamed_bytes = 0;
+    // With the blank line before it, one more byte reaches the limit.
+    let current = usize::try_from(MAX_STREAM_BYTES - 3).expect("size");
+    session.text = "x".repeat(current);
+    let message = |text: &str| {
+        stdout(&json!({
+            "type": "assistant", "parent_tool_use_id": null,
+            "message": { "id": "msg_2", "content": [{ "type": "text", "text": text }] },
+        }))
+    };
+    session.deferred.push_back(message("a"));
+    assert!(!session.kept_back_output_fails(), "at the limit");
+    session.deferred.push_back(message("b"));
+    assert!(
+        session.kept_back_output_fails(),
+        "with the earlier text, past it"
+    );
 }
 
 #[test]

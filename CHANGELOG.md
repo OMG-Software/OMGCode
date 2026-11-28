@@ -35,12 +35,14 @@ Changes are recorded here before a release version is assigned.
   trusted process serves MCP and holds each `tools/call` open while the turn
   runtime checks, approves, dispatches, and journals it as for every other
   provider. Failures are `claude_code_not_signed_in`, `claude_code_protocol`,
-  `claude_code_failed`, and `claude_code_withdrawn`, in chat and in
+  `claude_code_failed`, `claude_code_withdrawn`, and
+  `claude_code_turn_records_full`, in chat and in
   compaction; a request manifest records the endpoint label
   `claude-code:<profile>`. Each process holds a shared turn lock beside the
   runtime folder, checks every settings state since its turn resolved the
   connection before it starts, and is ended by a watcher when a later state
-  revokes one of its grants or removes it. The watcher checks once more as
+  revokes one of its grants, removes it, or records another connection's
+  sign-in folder in its program or relay folder. The watcher checks once more as
   it stops, a watcher that panicked fails the turn, and the turn lock of a
   process whose end was not confirmed, also of a tree the launch could not
   stop, stays held until OMGCode exits; a relay worker still running after
@@ -49,8 +51,9 @@ Changes are recorded here before a release version is assigned.
   settings check and launch, so a removal that the check misses finds it,
   and removes it only after its whole tree was observed ended. A
   record left behind outlives OMGCode, makes every later revocation and
-  removal of the connection fail, and keeps its sign-in folder reserved, also
-  once the connection is removed, until `workspace claude-code-acknowledge
+  removal of the connection fail, and keeps its sign-in folder reserved, and
+  its program and relay folders free of other connections' sign-in folders,
+  also once the connection is removed, until `workspace claude-code-acknowledge
   <profile id>` removes the connection's records. The operator first checks
   the entire `claude` process tree, including its MCP relays and their
   descendants, and keeps the record while that cannot be confirmed; the
@@ -59,7 +62,9 @@ Changes are recorded here before a release version is assigned.
   names the acknowledgement before advising a retry. At most 256 turn
   records are kept, counted and written under one exclusive lock across
   every connection, so concurrent turns cannot pass the limit together: a
-  turn that finds that many starts nothing, a sign-in
+  turn that finds that many starts nothing and fails with
+  `claude_code_turn_records_full`, whose message names the acknowledgement
+  and the process-tree check before it, a sign-in
   folder check that finds more is refused with a `control` error that names
   the acknowledgement, and the acknowledgement still clears a connection's
   records while the inventory is full.
@@ -92,9 +97,12 @@ Changes are recorded here before a release version is assigned.
   samples the cancellation and deadline once, just before the record, and
   that sample decides, so either one that came first fails the write and
   neither one after it fails a write recorded in time. Calls are not handed
-  to the turn runtime while queued output that ends the turn (a malformed
-  line, the end of the output, or input that never fully arrived) waits
-  behind them. The main agent's text has an 8 MiB
+  to the turn runtime while queued output that the turn would refuse waits
+  behind them: a malformed line, the end of the output, input that never
+  fully arrived, a second init report, a tool or message naming a refused
+  tool, a failed sign-in, a result while the calls would be held, or text
+  past the budget; status output and accepted text do not hold them back.
+  The main agent's text has an 8 MiB
   budget, a sub-agent's text
   delta is checked before it is ignored, a reused MCP request identifier is
   refused, the rendered prompt's size is checked before it is copied, a
@@ -120,8 +128,13 @@ Changes are recorded here before a release version is assigned.
   the ends of the fake, its relay, and a descendant that ignores its closed
   pipes, on Windows revokes the connection, which deletes its container
   profile, and removes the fixtures, which its own test checks. A failed
-  scope stop, an end not observed, or a failed revocation keeps and names
-  the folder instead, which two more of its tests check. It is a minor
+  scope stop, an end not observed, an alive file that names no holder, or a
+  failed revocation keeps and names the folder instead, which three more of
+  its tests check. A copy still running after 20 minutes is ended and
+  reaped before that cleanup and fails the run, which a fifth test checks;
+  each `systemctl` command of the scope's stop is bounded, and on Windows a
+  scene whose drop cannot revoke its connection keeps its folders for the
+  supervisor. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain
   variants. Both binaries also passed on Linux under WSL 2 in a delegated
   cgroup. No signed-in turn of the real `claude` ran on either platform,

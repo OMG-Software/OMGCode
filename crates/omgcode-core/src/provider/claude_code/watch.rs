@@ -18,7 +18,7 @@ use omgcode_platform::process::CancelSignal;
 
 use super::ClaudeCodeFailure;
 use super::launch::failure;
-use crate::control::{ClaudeCodeWatch, Recheck, TurnRecord, WatchCursor};
+use crate::control::{ClaudeCodeWatch, ControlError, Recheck, TurnRecord, WatchCursor};
 use crate::provider::ProviderError;
 
 /// How often the watcher checks whether the settings changed.
@@ -42,7 +42,8 @@ pub(super) struct HeldTurn {
 /// # Errors
 ///
 /// [`ClaudeCodeFailure::Withdrawn`] when a revocation holds the lock or a
-/// state withdrew the connection, and [`ClaudeCodeFailure::Failed`] when the
+/// state withdrew the connection, [`ClaudeCodeFailure::TurnRecordsFull`]
+/// when the turn records are full, and [`ClaudeCodeFailure::Failed`] when the
 /// lock file cannot be used or the record cannot be written.
 pub(super) fn hold_turn(watch: &ClaudeCodeWatch) -> Result<HeldTurn, ProviderError> {
     hold_turn_observed(watch, || {})
@@ -57,9 +58,11 @@ fn hold_turn_observed(
         .lock_turn()
         .map_err(|_| failure(ClaudeCodeFailure::Failed))?
         .ok_or(failure(ClaudeCodeFailure::Withdrawn))?;
-    let record = watch
-        .record_turn()
-        .map_err(|_| failure(ClaudeCodeFailure::Failed))?;
+    // A full inventory needs an acknowledgement, unlike a failed write.
+    let record = watch.record_turn().map_err(|error| match error {
+        ControlError::ClaudeCodeTurnRecordsFull => failure(ClaudeCodeFailure::TurnRecordsFull),
+        _ => failure(ClaudeCodeFailure::Failed),
+    })?;
     recorded();
     let mut cursor = watch.cursor();
     match watch.recheck_waiting(&mut cursor) {
@@ -194,9 +197,11 @@ mod tests {
 
     use omgcode_platform::process::CancelSignal;
 
-    use super::{ClaudeCodeFailure, Watcher, hold_turn_observed};
+    use uuid::Uuid;
+
+    use super::{ClaudeCodeFailure, Watcher, hold_turn, hold_turn_observed, release_unstarted};
     use crate::control::{
-        ClaudeCodeDeclaration, ClaudeCodeWatch, ControlError, ControlStore,
+        ClaudeCodeDeclaration, ClaudeCodeWatch, ControlError, ControlStore, MAX_TURN_RECORDS,
         acknowledge_claude_code_cleanup,
     };
     use crate::provider::ProviderError;
@@ -364,5 +369,153 @@ mod tests {
         store
             .add_claude_code_profile(&again, store.revision())
             .expect("the folder is free once the turn is gone");
+    }
+
+    /// A full turn-record inventory fails the turn with its own failure,
+    /// whose description names the acknowledgement and the process-tree
+    /// check before it, while a record that cannot be written for another
+    /// reason fails it as `claude_code_failed`. Neither leaves a record.
+    #[test]
+    fn a_full_inventory_fails_the_turn_apart_from_other_record_failures() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, _program, _sign_in, watch) = scene(directory.path());
+        let profile_id = Uuid::new_v4();
+        let others = ClaudeCodeWatch::for_tests(data.clone(), profile_id, directory.path());
+        for _ in 0..MAX_TURN_RECORDS {
+            let _left = others.record_turn().expect("record below the limit");
+        }
+        let full = hold_turn(&watch).err();
+        assert!(
+            matches!(
+                full,
+                Some(ProviderError::ClaudeCode(
+                    ClaudeCodeFailure::TurnRecordsFull
+                ))
+            ),
+            "{full:?}"
+        );
+        let description = ClaudeCodeFailure::TurnRecordsFull.description();
+        assert!(
+            description.contains("workspace claude-code-acknowledge")
+                && description.contains("MCP relays and their descendants"),
+            "{description}"
+        );
+        assert!(acknowledge_claude_code_cleanup(&data, profile_id).expect("acknowledged"));
+
+        // The records' lock cannot be opened once a folder takes its name.
+        let lock = data.join("claude-code").join("turn-records.lock");
+        fs::remove_file(&lock).expect("the records' lock file");
+        fs::create_dir(&lock).expect("a folder in its place");
+        let failed = hold_turn(&watch).err();
+        assert!(
+            matches!(
+                failed,
+                Some(ProviderError::ClaudeCode(ClaudeCodeFailure::Failed))
+            ),
+            "{failed:?}"
+        );
+        fs::remove_dir(&lock).expect("the folder");
+        let Ok(held) = hold_turn(&watch) else {
+            panic!("the turn records again");
+        };
+        release_unstarted(held.lock, held.record);
+        withdraw(&data);
+    }
+
+    /// A running turn's record reserves its relay folder: while the turn
+    /// holds it, no other connection's sign-in folder can be recorded there,
+    /// though a separate one can. Once the turn ends, its record is gone;
+    /// on Linux, where no grant records the relay folder, the folder is then
+    /// accepted.
+    #[test]
+    fn a_running_turn_reserves_its_relay_folder() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, program, _sign_in, watch) = scene(directory.path());
+        let profile_id = ControlStore::open(&data)
+            .expect("store")
+            .claude_code_setup("claude")
+            .expect("connection")
+            .0;
+        let inside = directory.path().join("relay").join("sign-in");
+        let apart = directory.path().join("apart-sign-in");
+        for folder in [&inside, &apart] {
+            fs::create_dir(folder).expect("sign-in folder");
+        }
+        let declaration = |name: &str, config_folder: &Path| ClaudeCodeDeclaration {
+            name: name.into(),
+            program: program.clone(),
+            config_folder: config_folder.to_owned(),
+        };
+        let Ok(held) = hold_turn(&watch) else {
+            panic!("the turn starts");
+        };
+        let mut store = ControlStore::open(&data).expect("store");
+        let refused =
+            store.add_claude_code_profile(&declaration("inside", &inside), store.revision());
+        assert!(
+            matches!(refused, Err(ControlError::ClaudeCodeScopeReserved(id)) if id == profile_id),
+            "the record reserves the relay folder: {refused:?}"
+        );
+        store
+            .add_claude_code_profile(&declaration("apart", &apart), store.revision())
+            .expect("a separate folder is accepted");
+        release_unstarted(held.lock, held.record);
+        let after =
+            store.add_claude_code_profile(&declaration("inside", &inside), store.revision());
+        if cfg!(windows) {
+            assert!(
+                matches!(
+                    after,
+                    Err(ControlError::ProviderRefused(
+                        "the Claude sign-in folder must not overlap another Claude Code connection's program or relay grant"
+                    ))
+                ),
+                "the relay grant still refuses it: {after:?}"
+            );
+        } else {
+            after.expect("no record or grant reserves the folder");
+        }
+        drop(store);
+        withdraw(&data);
+    }
+
+    /// A sign-in folder recorded inside the turn's relay folder after the
+    /// turn resolved and before its record existed: no record refused it,
+    /// and on Linux no grant records the relay folder, so the turn's check
+    /// withdraws the turn before any process starts, and leaves no record.
+    /// On Windows the relay grant refuses the folder.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_sign_in_folder_recorded_in_the_relay_folder_before_the_record_withdraws_the_turn() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let (data, program, _sign_in, watch) = scene(directory.path());
+        let inside = directory.path().join("relay").join("sign-in");
+        fs::create_dir(&inside).expect("sign-in folder in the relay folder");
+        let mut store = ControlStore::open(&data).expect("store");
+        store
+            .add_claude_code_profile(
+                &ClaudeCodeDeclaration {
+                    name: "inside".into(),
+                    program,
+                    config_folder: inside,
+                },
+                store.revision(),
+            )
+            .expect("no record or grant refuses it yet");
+        drop(store);
+        let held = hold_turn(&watch).err();
+        assert!(
+            matches!(
+                held,
+                Some(ProviderError::ClaudeCode(ClaudeCodeFailure::Withdrawn))
+            ),
+            "the check sees the folder: {held:?}"
+        );
+        let profile_id = ControlStore::open(&data)
+            .expect("store")
+            .claude_code_setup("claude")
+            .expect("connection")
+            .0;
+        assert!(!acknowledge_claude_code_cleanup(&data, profile_id).expect("free lock"));
     }
 }

@@ -21,7 +21,9 @@
 //! connection exists, until the operator acknowledges it, as
 //! `runs acknowledge` does for a run. The record names the turn's sign-in
 //! folder, which stays reserved while it exists, also once the connection is
-//! removed. At most [`MAX_TURN_RECORDS`] records are kept: a turn starts no
+//! removed, and the program and relay folders the turn can read, in which no
+//! other connection's sign-in folder may then be recorded: on Linux no grant
+//! records them. At most [`MAX_TURN_RECORDS`] records are kept: a turn starts no
 //! process once that many exist, and a reservation check refuses beyond
 //! them, while an acknowledgement still clears its connection's records.
 //! A turn counts the records and writes its own under one exclusive lock
@@ -55,8 +57,8 @@ const TURN_LOCK_SUFFIX: &str = ".turns";
 /// The suffix of a turn's record, named `<profile>.<turn>.unconfirmed`.
 const TURN_RECORD_SUFFIX: &str = ".unconfirmed";
 
-/// The longest turn record read back; one holds a profile identifier and a
-/// folder record.
+/// The longest turn record read back; one holds a profile identifier and
+/// three folder records.
 const MAX_TURN_RECORD_BYTES: u64 = 64 * 1024;
 
 /// The most turn records kept in application storage, across every
@@ -72,15 +74,32 @@ const RECORDS_LOCK: &str = "turn-records.lock";
 const RECORDS_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// The settings one turn of a Claude Code connection was resolved from: the
-/// application storage, the connection and its sign-in folder, and how many
-/// settings events were recorded then. Only
-/// [`ControlStore::resolve_claude_code`] makes one, under the settings lock.
+/// application storage, the connection, its sign-in folder, the program and
+/// relay folders the turn can read, and how many settings events were
+/// recorded then. Only [`ControlStore::resolve_claude_code`] makes one, under
+/// the settings lock.
 #[derive(Clone, Debug)]
 pub struct ClaudeCodeWatch {
     data_root: PathBuf,
     profile_id: Uuid,
-    config_folder: DirectoryRecord,
+    folders: TurnFolders,
     events: usize,
+}
+
+/// The folders one turn uses: its sign-in folder, and the program and relay
+/// folders it can read whole.
+#[derive(Clone, Debug)]
+pub(super) struct TurnFolders {
+    pub(super) config_folder: DirectoryRecord,
+    pub(super) program_folder: DirectoryRecord,
+    pub(super) relay_folder: DirectoryRecord,
+}
+
+impl TurnFolders {
+    /// The folders the turn can read whole.
+    pub(super) const fn readable(&self) -> [&DirectoryRecord; 2] {
+        [&self.program_folder, &self.relay_folder]
+    }
 }
 
 /// How far a watcher has read the settings.
@@ -125,61 +144,75 @@ impl TurnRecord {
     }
 }
 
-/// What a turn record holds.
+/// What a turn record holds. A record without the program and relay
+/// folders, as an earlier build of this change wrote, cannot be read, so it
+/// reserves every folder until it is acknowledged.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct TurnRecordBody {
     profile_id: Uuid,
     config_folder: DirectoryRecord,
+    program_folder: DirectoryRecord,
+    relay_folder: DirectoryRecord,
 }
 
 impl ClaudeCodeWatch {
     pub(super) const fn new(
         data_root: PathBuf,
         profile_id: Uuid,
-        config_folder: DirectoryRecord,
+        folders: TurnFolders,
         events: usize,
     ) -> Self {
         Self {
             data_root,
             profile_id,
-            config_folder,
+            folders,
             events,
         }
     }
 
     /// A watch of `profile_id`'s turns in `data_root`, for tests that need
-    /// only its lock and records, whose sign-in folder is `config_folder`.
+    /// only its lock and records, whose sign-in, program, and relay folders
+    /// are all `folder`.
     ///
     /// # Panics
     ///
-    /// When `config_folder` cannot be captured.
+    /// When `folder` cannot be captured.
     #[cfg(test)]
-    pub(crate) fn for_tests(data_root: PathBuf, profile_id: Uuid, config_folder: &Path) -> Self {
-        let config_folder = DirectoryRecord::capture(config_folder).expect("sign-in folder");
-        Self::new(data_root, profile_id, config_folder, 0)
+    pub(crate) fn for_tests(data_root: PathBuf, profile_id: Uuid, folder: &Path) -> Self {
+        let folder = DirectoryRecord::capture(folder).expect("turn folder");
+        let folders = TurnFolders {
+            config_folder: folder.clone(),
+            program_folder: folder.clone(),
+            relay_folder: folder,
+        };
+        Self::new(data_root, profile_id, folders, 0)
     }
 
     /// Record, durably, that a turn of the connection is starting. Call it
     /// while the turn holds its shared lock and before its process starts.
     /// Until [`TurnRecord::clear`] removes it, every wait for the
-    /// connection's turns fails, also after this process exits, and the
-    /// turn's sign-in folder stays reserved.
+    /// connection's turns fails, also after this process exits, the turn's
+    /// sign-in folder stays reserved, and no other connection's sign-in
+    /// folder may be recorded in its program or relay folder.
     ///
     /// # Errors
     ///
-    /// The I/O error that stopped writing or syncing the record, one that
-    /// says [`MAX_TURN_RECORDS`] records already exist, and one that says
-    /// another turn held the records' lock for [`RECORDS_LOCK_WAIT`]. No
-    /// process may start then.
-    pub(crate) fn record_turn(&self) -> io::Result<TurnRecord> {
+    /// [`ControlError::ClaudeCodeTurnRecordsFull`] when [`MAX_TURN_RECORDS`]
+    /// records already exist, and [`ControlError::Io`] for the I/O error that
+    /// stopped writing or syncing the record or for another turn holding the
+    /// records' lock for [`RECORDS_LOCK_WAIT`]. No process may start then.
+    pub(crate) fn record_turn(&self) -> Result<TurnRecord, ControlError> {
         self.record_turn_observed(|| {})
     }
 
     /// [`Self::record_turn`], calling `counted` once the records were
     /// counted and before the new one is written, so a test can start
     /// another turn there.
-    pub(super) fn record_turn_observed(&self, counted: impl FnOnce()) -> io::Result<TurnRecord> {
+    pub(super) fn record_turn_observed(
+        &self,
+        counted: impl FnOnce(),
+    ) -> Result<TurnRecord, ControlError> {
         // Held until the record is written and synced, so two turns, also
         // of two connections, cannot both count a free record.
         let _records = lock_records(&self.data_root)?;
@@ -193,14 +226,14 @@ impl ClaudeCodeWatch {
             })
         })?;
         if kept >= MAX_TURN_RECORDS {
-            return Err(io::Error::other(
-                "the Claude Code turn records are full; acknowledge the ones left behind first",
-            ));
+            return Err(ControlError::ClaudeCodeTurnRecordsFull);
         }
         counted();
         let body = serde_json::to_vec(&TurnRecordBody {
             profile_id: self.profile_id,
-            config_folder: self.config_folder.clone(),
+            config_folder: self.folders.config_folder.clone(),
+            program_folder: self.folders.program_folder.clone(),
+            relay_folder: self.folders.relay_folder.clone(),
         })
         .map_err(io::Error::other)?;
         let parent = self.data_root.join(RUNTIME_PARENT);
@@ -225,10 +258,10 @@ impl ClaudeCodeWatch {
             drop(file);
             // No process started, so nothing needs the record; one that
             // cannot be removed fails closed, as an unconfirmed end does.
-            return Err(match fs::remove_file(&path) {
+            return Err(ControlError::Io(match fs::remove_file(&path) {
                 Ok(()) => error,
                 Err(removal) => io::Error::other(format!("{error}; the record stays: {removal}")),
-            });
+            }));
         }
         Ok(TurnRecord { path })
     }
@@ -269,13 +302,10 @@ impl ClaudeCodeWatch {
             Ok(Some((mut control, history))) => {
                 cursor.seen = Some(current);
                 cursor.events = control.event_count();
-                let profile_id = self.profile_id;
                 history
                     .into_iter()
-                    .find_map(|state| {
-                        control.as_of(state, |settings| settings.claude_code_withdrawn(profile_id))
-                    })
-                    .or_else(|| control.claude_code_withdrawn(profile_id))
+                    .find_map(|state| control.as_of(state, |settings| self.withdrawn_by(settings)))
+                    .or_else(|| self.withdrawn_by(&control))
                     .map_or(Recheck::Allowed, Recheck::Withdrawn)
             }
             Ok(None) => Recheck::Withdrawn("the settings were removed"),
@@ -295,6 +325,30 @@ impl ClaudeCodeWatch {
                 other => return other,
             }
         }
+    }
+
+    /// Why `settings` no longer allow this turn, if they don't: the
+    /// connection was withdrawn, or another connection's sign-in folder now
+    /// overlaps a folder the turn can read. A sign-in folder recorded after
+    /// the turn resolved and before its record existed was admitted without
+    /// seeing the record, so this check stops the turn instead.
+    fn withdrawn_by(&self, settings: &ControlStore) -> Option<&'static str> {
+        settings
+            .claude_code_withdrawn(self.profile_id)
+            .or_else(|| {
+                self.folders.readable().into_iter().find_map(|folder| {
+                    match settings.overlaps_claude_code_sign_in(folder, Some(self.profile_id)) {
+                        Ok(false) => None,
+                        Ok(true) => Some(
+                            "another Claude Code connection's sign-in folder overlaps a folder the turn can read",
+                        ),
+                        // A moved or reserved folder could lie in one.
+                        Err(_) => Some(
+                            "the Claude Code sign-in folders could not be proven apart from the turn's folders",
+                        ),
+                    }
+                })
+            })
     }
 }
 
@@ -425,21 +479,20 @@ pub fn acknowledge_claude_code_cleanup(
     Ok(removed)
 }
 
-/// The sign-in folders that turn records reserve, with the connection of
-/// each, leaving out the connections `skip` accepts: those whose settings
-/// already reserve the folder.
+/// The folders that turn records reserve, with the connection of each,
+/// leaving out the connections `skip` accepts.
 ///
 /// # Errors
 ///
 /// [`ControlError::ClaudeCodeTurnRecordUnreadable`] for a record that cannot
 /// be read or that names another connection than its file name: it proves
-/// nothing about where its folder is. [`ControlError::ClaudeCodeTurnRecordsFull`]
+/// nothing about where its folders are. [`ControlError::ClaudeCodeTurnRecordsFull`]
 /// beyond [`MAX_TURN_RECORDS`] records, and [`ControlError::Io`] when the
 /// records cannot be listed.
-pub(super) fn reserved_sign_in_folders(
+pub(super) fn reserved_folders(
     data_root: &Path,
     skip: impl Fn(Uuid) -> bool,
-) -> Result<Vec<(Uuid, DirectoryRecord)>, ControlError> {
+) -> Result<Vec<(Uuid, TurnFolders)>, ControlError> {
     let mut reserved = Vec::new();
     for (owner, path) in turn_records(data_root)? {
         if skip(owner) {
@@ -449,7 +502,14 @@ pub(super) fn reserved_sign_in_folders(
             .ok()
             .filter(|body| body.profile_id == owner)
             .ok_or(ControlError::ClaudeCodeTurnRecordUnreadable(owner))?;
-        reserved.push((owner, body.config_folder));
+        reserved.push((
+            owner,
+            TurnFolders {
+                config_folder: body.config_folder,
+                program_folder: body.program_folder,
+                relay_folder: body.relay_folder,
+            },
+        ));
     }
     Ok(reserved)
 }

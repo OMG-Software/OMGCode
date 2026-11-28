@@ -159,9 +159,11 @@ open.
 and an authentication mode. Kinds are `lm_studio`, `ollama_local`,
 `ollama_cloud`, `anthropic`, `openai`, `open_router`, and, since ADR-0092,
 `google`, `meta`, `moonshot`, `tencent`, `thinking_machines`, `minimax`,
-`z_ai`, `deepseek`, `xai`, and `openai_compatible`. Modes are
+`z_ai`, `deepseek`, `xai`, and `openai_compatible`, and, since ADR-0109,
+`claude_code`, which only `workspace claude-code-add` records
+([below](#claude-code-connection-adr-0109)). Modes are
 `subscription`, `api_key`, and `none`. Subscription is accepted only for
-OpenAI and Anthropic. Since ADR-0093 an `openai` subscription profile with
+OpenAI, Anthropic, and Claude Code, which accepts nothing else. Since ADR-0093 an `openai` subscription profile with
 OpenAI's fixed endpoint can sign in with ChatGPT
 ([below](#chatgpt-sign-in-adr-0093)); no adapter reads an `anthropic` one. API keys are accepted for LM
 Studio and every hosted kind. Since ADR-0071 an `ollama_cloud` profile also
@@ -643,7 +645,10 @@ Anthropic approval, and the Claude subscription requirement stays open.
   check misses finds it, and removes it only once its whole process
   tree was observed ended. A record left behind makes every such wait fail,
   also after OMGCode restarts, and keeps the connection's sign-in folder
-  reserved, also once the connection is removed. Before running `workspace
+  reserved, also once the connection is removed. The record also names the
+  program and relay folders the turn reads: while it exists, no other
+  connection's sign-in folder that overlaps either is recorded, though a
+  separate one is. Before running `workspace
   claude-code-acknowledge PROFILE_ID`, the operator must check that no
   `claude` process of the connection remains, including its MCP relays and
   their descendants, and keep the record while that cannot be confirmed.
@@ -651,14 +656,16 @@ Anthropic approval, and the Claude subscription requirement stays open.
   nothing about that check and is refused while a turn holds the
   connection's turn lock. At most 256 turn records are kept, each counted
   and written under one exclusive lock across every connection: past that
-  no turn starts and a sign-in folder check is refused until records are
+  no turn starts, failing with `claude_code_turn_records_full`, and a
+  sign-in folder check is refused until records are
   acknowledged, which still works while the inventory is full. On Linux no
   grant exists, so only removing the connection withdraws it.
 - **Use.** `chat --provider-profile NAME` and `session compact
   --provider-profile NAME` resolve the connection. Every turn re-checks the
   recorded folder identities and, on Windows, each grant, and checks that
   neither its program folder nor its relay folder overlaps another
-  connection's sign-in folder, on Linux too. Every other route,
+  connection's sign-in folder, on Linux too; a settings state that records
+  such a folder while the turn starts or runs withdraws it. Every other route,
   including the desktop shell, the active selection, and `models`, refuses
   the profile with `claude_code_cli_only`. A request manifest records the
   endpoint label `claude-code:NAME`.
@@ -676,9 +683,12 @@ Anthropic approval, and the Claude subscription requirement stays open.
 - **Failures.** A run that the CLI reports as not signed in fails with
   `claude_code_not_signed_in`, which tells the operator to run `claude auth
   login` with `CLAUDE_CONFIG_DIR` set to the connection's sign-in folder.
-  The other failures are `claude_code_protocol`, `claude_code_failed`, and
+  The other failures are `claude_code_protocol`, `claude_code_failed`,
   `claude_code_withdrawn`, which means the settings revoked a grant of the
-  connection or removed it while the turn ran.
+  connection, removed it, or recorded another connection's sign-in folder
+  in a folder the turn reads while the turn ran, and
+  `claude_code_turn_records_full`, whose message names the acknowledgement
+  and the process-tree check that must come first.
 - **Verified.** A fake `claude` drives the whole path in the tests: on
   Windows inside the connection's real AppContainer with real grants,
   through the CLI commands, a tool turn, a streamed resumed turn, a

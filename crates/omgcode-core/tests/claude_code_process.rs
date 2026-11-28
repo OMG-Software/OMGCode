@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, ExitStatus};
+use std::process::{Child, Command, ExitCode, ExitStatus};
 use std::time::{Duration, Instant};
 
 use omgcode_core::action_journal::{ActionDisposition, ActionJournal, ActionRecord, ActionTool};
@@ -63,7 +63,15 @@ fn main() -> ExitCode {
     {
         return abandon_one_turn();
     }
-    #[cfg_attr(not(unix), allow(unused_mut, reason = "one test is Unix only"))]
+    if arguments
+        .get(1)
+        .is_some_and(|argument| argument == HANG_ARGUMENT)
+    {
+        // As a test that never returns; bounded, so a copy nothing ends
+        // still ends.
+        std::thread::sleep(HANG_BOUND);
+        return ExitCode::FAILURE;
+    }
     let mut tests: Vec<(&str, fn())> = vec![
         (
             "a_text_reply_streams_and_finishes",
@@ -112,6 +120,11 @@ fn main() -> ExitCode {
         "a_turn_whose_record_cannot_be_written_starts_no_process",
         a_turn_whose_record_cannot_be_written_starts_no_process,
     ));
+    #[cfg(windows)]
+    tests.push((
+        "a_scene_whose_revocation_fails_keeps_its_folders",
+        a_scene_whose_revocation_fails_keeps_its_folders,
+    ));
     let mut failed = 0;
     let mut ran = 0;
     for (name, test) in tests {
@@ -152,11 +165,22 @@ const SUPERVISED_ENV: &str = "OMGCODE_SUPERVISED_TEST";
 /// Makes a supervised copy abandon one turn, for the supervisor's own test.
 const ABANDON_ARGUMENT: &str = "--abandon-one-turn";
 
+/// Makes a supervised copy hang, as a test that never returns would, for
+/// the supervisor's own test.
+const HANG_ARGUMENT: &str = "--hang-for-the-supervisor";
+
+/// How long a hanging copy sleeps before it ends by itself.
+const HANG_BOUND: Duration = Duration::from_secs(300);
+
+/// How long a supervised copy may run its tests, each bounded by its own
+/// waits, before it is ended as a hung test would leave it.
+const COPY_DEADLINE: Duration = Duration::from_secs(20 * 60);
+
 /// One of the supervisor's own tests: `Err` names its failure.
 type SupervisorTest = fn() -> Result<(), String>;
 
 /// The supervisor's own tests, which run in the supervising process.
-const SUPERVISOR_TESTS: [(&str, SupervisorTest); 3] = [
+const SUPERVISOR_TESTS: [(&str, SupervisorTest); 5] = [
     (
         "a_supervisor_stops_and_cleans_up_after_an_abandoned_turn",
         supervisor_test,
@@ -168,6 +192,14 @@ const SUPERVISOR_TESTS: [(&str, SupervisorTest); 3] = [
     (
         "a_supervisor_keeps_the_folder_when_a_revocation_fails",
         a_supervisor_keeps_the_folder_when_a_revocation_fails,
+    ),
+    (
+        "a_supervisor_keeps_the_folder_when_an_alive_file_names_no_holder",
+        a_supervisor_keeps_the_folder_when_an_alive_file_names_no_holder,
+    ),
+    (
+        "a_supervisor_ends_a_copy_that_runs_past_its_deadline",
+        a_supervisor_ends_a_copy_that_runs_past_its_deadline,
     ),
 ];
 
@@ -349,26 +381,108 @@ fn a_supervisor_keeps_the_folder_when_a_revocation_fails() -> Result<(), String>
     expect_kept(outcome, &path, "the injected revocation failed")
 }
 
+/// An alive file whose lock is free but that names no process, as one
+/// whose process ended between making the file and locking it leaves,
+/// proves no end: the folder is kept and named.
+fn a_supervisor_keeps_the_folder_when_an_alive_file_names_no_holder() -> Result<(), String> {
+    let (folder, path) = idle_supervision_folder()?;
+    let (_, sign_in) = Scene::folders(&path.join("scene"));
+    fs::write(sign_in.join(fake_claude::RELAY_ALIVE_FILE), b"")
+        .map_err(|error| format!("the alive file: {error}"))?;
+    let outcome = clean_up_with(folder, || Ok(()), |_| Ok(None));
+    expect_kept(outcome, &path, "names no process")
+}
+
+/// A copy that runs past its deadline, as one whose test never returns
+/// would, is ended and reaped, then cleaned up, and fails the run.
+fn a_supervisor_ends_a_copy_that_runs_past_its_deadline() -> Result<(), String> {
+    let limit = Duration::from_secs(2);
+    let started = Instant::now();
+    match supervised_copy_within(2, &[OsString::from(HANG_ARGUMENT)], limit) {
+        Err(error) if error.contains("ran past its deadline") && error.contains("was ended") => {}
+        Err(error) => return Err(error),
+        Ok((status, _)) => return Err(format!("the copy was not ended: {status}")),
+    }
+    let took = started.elapsed();
+    if took >= HANG_BOUND {
+        return Err(format!("the copy ended by itself after {took:?}"));
+    }
+    Ok(())
+}
+
 /// Run a copy of this binary with `arguments`, its temporary folders in a
-/// folder of this process, and clean up after it. `run` keeps its scope's
-/// name unique.
+/// folder of this process, and clean up after it, within [`COPY_DEADLINE`].
+/// `run` keeps its scope's name unique.
 fn supervised_copy(run: u32, arguments: &[OsString]) -> Result<(ExitStatus, Cleaned), String> {
+    supervised_copy_within(run, arguments, COPY_DEADLINE)
+}
+
+/// [`supervised_copy`], ending the copy once it ran for `limit`. An ended
+/// copy is reaped before its fixtures are cleaned up, and fails the run; a
+/// copy that could not be ended leaves its folder kept and named.
+fn supervised_copy_within(
+    run: u32,
+    arguments: &[OsString],
+    limit: Duration,
+) -> Result<(ExitStatus, Cleaned), String> {
     let folder = TempDir::new().map_err(|error| format!("the supervision folder: {error}"))?;
     let scope = format!(
         "omgcode-claude-code-test-{}-{run}.scope",
         std::process::id()
     );
     let program = env::current_exe().map_err(|error| format!("the test executable: {error}"))?;
-    let status = copy_command(&program, &scope)
+    let mut copy = copy_command(&program, &scope)
         .args(arguments)
         .env(SUPERVISED_ENV, "1")
         .env("TMPDIR", folder.path())
         .env("TMP", folder.path())
         .env("TEMP", folder.path())
-        .status()
+        .spawn()
         .map_err(|error| format!("start the supervised copy: {error}"))?;
-    let cleaned = clean_up_after(folder, &scope)?;
-    Ok((status, cleaned))
+    let status = match wait_within(&mut copy, limit, "the supervised copy") {
+        Ok(status) => Ok(status),
+        Err(Overdue::Ended(error)) => Err(error),
+        Err(Overdue::Running(error)) => {
+            return Err(format!("{error}; kept {}", folder.keep().display()));
+        }
+    };
+    let cleaned = clean_up_after(folder, &scope);
+    match (status, cleaned) {
+        (Ok(status), Ok(cleaned)) => Ok((status, cleaned)),
+        (Ok(_), Err(error)) | (Err(error), Ok(_)) => Err(error),
+        (Err(overdue), Err(error)) => Err(format!("{overdue}; {error}")),
+    }
+}
+
+/// How a bounded wait for a child process failed.
+enum Overdue {
+    /// It ran past its deadline, and was then ended and reaped.
+    Ended(String),
+    /// It could not be waited for, or ending it failed, so it may still run.
+    Running(String),
+}
+
+/// Wait at most `limit` for `child`, named `what`; one still running then
+/// is ended and reaped.
+fn wait_within(child: &mut Child, limit: Duration, what: &str) -> Result<ExitStatus, Overdue> {
+    let until = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                return Err(match child.kill().and_then(|()| child.wait()) {
+                    Ok(_) => Overdue::Ended(format!(
+                        "{what} ran past its deadline of {limit:?} and was ended"
+                    )),
+                    Err(error) => Overdue::Running(format!(
+                        "{what} ran past its deadline of {limit:?}, and ending it failed: {error}"
+                    )),
+                });
+            }
+            Err(error) => return Err(Overdue::Running(format!("wait for {what}: {error}"))),
+        }
+    }
 }
 
 /// A copy of this binary in its own scope with a delegated cgroup, which a
@@ -468,28 +582,55 @@ fn clean_up_in(
 
 /// Stop a copy's scope, which ends every process still in it, and check
 /// that it is inactive. A scope whose processes all ended is already gone.
+/// Each `systemctl` command is bounded, so one that hangs fails the stop,
+/// and the folder is kept and named.
 #[cfg(target_os = "linux")]
 fn stop_scope(scope: &str) -> Result<(), String> {
     let state = || {
-        Command::new("systemctl")
-            .args(["--user", "show", "--property=ActiveState", "--value", scope])
-            .output()
+        systemctl(&["show", "--property=ActiveState", "--value", scope])
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            .map_err(|error| format!("read the state of {scope}: {error}"))
     };
     if state()? != "inactive" {
         // `stop` returns once the scope's processes ended or were killed.
-        let stopped = Command::new("systemctl")
-            .args(["--user", "stop", scope])
-            .status()
-            .map_err(|error| format!("stop {scope}: {error}"))?;
-        if !stopped.success() {
-            return Err(format!("stop {scope}: {stopped}"));
+        let stopped = systemctl(&["stop", scope])?;
+        if !stopped.status.success() {
+            return Err(format!(
+                "stop {scope}: {}; {}",
+                stopped.status,
+                String::from_utf8_lossy(&stopped.stderr).trim()
+            ));
         }
     }
     match state()?.as_str() {
         "inactive" => Ok(()),
         other => Err(format!("{scope} is {other} after its stop")),
+    }
+}
+
+/// How long one `systemctl` command may take. A scope's stop waits for its
+/// processes and kills them after systemd's own 90-second stop timeout.
+#[cfg(target_os = "linux")]
+const SYSTEMCTL_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Run `systemctl --user` with `arguments` within [`SYSTEMCTL_DEADLINE`],
+/// and collect its output.
+#[cfg(target_os = "linux")]
+fn systemctl(arguments: &[&str]) -> Result<std::process::Output, String> {
+    let what = format!("systemctl --user {}", arguments.join(" "));
+    let mut child = Command::new("systemctl")
+        .arg("--user")
+        .args(arguments)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{what}: {error}"))?;
+    // Its output is a line or two, which the pipes hold until it ends.
+    match wait_within(&mut child, SYSTEMCTL_DEADLINE, &what) {
+        Ok(_) => child
+            .wait_with_output()
+            .map_err(|error| format!("{what}: {error}")),
+        Err(Overdue::Ended(error) | Overdue::Running(error)) => Err(error),
     }
 }
 
@@ -550,7 +691,8 @@ fn revoke_left_connection(_data: &Path) -> Result<Option<Revoked>, String> {
 /// fixtures left behind.
 fn abandon_one_turn() -> ExitCode {
     let scene = Scene::new();
-    let flood = start_flood(&scene, CancelToken::new(), "SCENARIO:flood-linger");
+    let stop = CancelToken::new();
+    let flood = start_flood(&scene, stop.clone(), "SCENARIO:flood-linger");
     let until = Instant::now() + Duration::from_secs(60);
     while Instant::now() < until && !flood.turn.is_finished() {
         if fake_claude::stalled(&scene.sign_in)
@@ -561,11 +703,15 @@ fn abandon_one_turn() -> ExitCode {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    eprintln!(
-        "the turn never stalled with its fake, relay, and linger running; {}",
-        fake_claude::diagnosis(&scene.sign_in)
-    );
-    ExitCode::FAILURE
+    // The scene is dropped only once its turn was joined: a turn that ends
+    // once cancelled fails the copy, and one that does not ends the copy
+    // with the scene left for the supervisor.
+    abandon(
+        flood.turn,
+        &stop,
+        &scene.sign_in,
+        "the turn never stalled with its fake, relay, and linger running",
+    )
 }
 
 /// End this copy of the tests with a turn still running. No drop runs, so
@@ -580,7 +726,8 @@ fn end_test_process(message: &str) -> ! {
 // ---------------------------------------------------------------------------
 
 struct Scene {
-    _temporary: TempDir,
+    /// `None` once kept for the supervisor.
+    temporary: Option<TempDir>,
     data: PathBuf,
     workspace: PathBuf,
     workspace_id: WorkspaceId,
@@ -679,7 +826,7 @@ impl Scene {
             watch: paths.watch,
         };
         Self {
-            _temporary: temporary,
+            temporary: Some(temporary),
             data,
             workspace,
             workspace_id,
@@ -717,15 +864,75 @@ impl Scene {
 }
 
 impl Drop for Scene {
+    /// On Windows, revoke the connection's grants, which deletes its
+    /// container profile. A scene whose revocation failed keeps its folders,
+    /// which lie in the supervisor's folder, so the supervisor retries the
+    /// revocation with their settings and names the folder if it fails again.
     fn drop(&mut self) {
-        if cfg!(windows)
-            && let Ok(mut control) = ControlStore::open(&self.data)
+        if !cfg!(windows) {
+            return;
+        }
+        let revoked = ControlStore::open(&self.data)
+            .map_err(|error| error.to_string())
+            .and_then(|mut control| {
+                if control.claude_code_setup("claude").is_err() {
+                    // A test removed the connection, and with it its grants.
+                    return Ok(());
+                }
+                control
+                    .revoke_claude_code_grants("claude")
+                    .map(|_| ())
+                    .map_err(|failure| failure.error.to_string())
+            });
+        if let Err(error) = revoked
+            && let Some(temporary) = self.temporary.take()
         {
-            // Revoking deletes the container profile; a failure only leaves an
-            // entry on folders that are about to be removed.
-            let _ = control.revoke_claude_code_grants("claude");
+            eprintln!(
+                "the scene's connection could not be revoked ({error}); kept {} for the supervisor",
+                temporary.keep().display()
+            );
         }
     }
+}
+
+/// A scene whose connection cannot be revoked when it is dropped, here
+/// because a turn record left behind fails the revocation's wait, keeps its
+/// folders, whose settings a retry needs. Once the record is acknowledged,
+/// the retry revokes the connection and deletes its container profile.
+#[cfg(windows)]
+fn a_scene_whose_revocation_fails_keeps_its_folders() {
+    let scene = Scene::new();
+    let profile_id = scene.profile_id();
+    let data = scene.data.clone();
+    let base = scene
+        .temporary
+        .as_ref()
+        .expect("the scene's folder")
+        .path()
+        .to_owned();
+    let records = data.join("claude-code");
+    fs::create_dir_all(&records).expect("the connection's storage");
+    fs::write(
+        records.join(format!(
+            "{}.{}.unconfirmed",
+            profile_id.simple(),
+            uuid::Uuid::new_v4().simple()
+        )),
+        b"{}",
+    )
+    .expect("a turn record left behind");
+    drop(scene);
+    assert!(base.is_dir(), "the scene's folders are kept");
+    assert!(
+        omgcode_core::control::acknowledge_claude_code_cleanup(&data, profile_id)
+            .expect("acknowledged")
+    );
+    let revocation = ControlStore::open(&data)
+        .expect("control store")
+        .revoke_claude_code_grants("claude")
+        .expect("the retry revokes the connection");
+    assert!(revocation.profile_deleted);
+    fs::remove_dir_all(&base).expect("remove the kept folders");
 }
 
 #[cfg(windows)]
@@ -1230,17 +1437,15 @@ fn flood_turn(
         if stalled && !seen_running {
             seen_running = fake_claude::processes_running(&scene.sign_in);
         }
-        if let Some(thread) = &turn_thread
-            && !seen_blocked
-            && asleep_in_socket_write(thread)
-        {
-            seen_blocked = true;
-        }
+        // Sampled now, so the cancellation lands while the write is blocked;
+        // `seen_blocked` keeps the first sight for the report.
+        let blocked_now = turn_thread.as_deref().is_some_and(asleep_in_socket_write);
+        seen_blocked |= blocked_now;
         if cancel_once_blocked
             && cancelled_at.is_none()
             && stalled
             && seen_running
-            && (seen_blocked || !WRITE_PROBE)
+            && (blocked_now || !WRITE_PROBE)
         {
             // Taken first, so a delay after the request counts against the
             // turn.

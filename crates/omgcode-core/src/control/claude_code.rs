@@ -695,7 +695,11 @@ impl ControlStore {
         let watch = ClaudeCodeWatch::new(
             data_root,
             profile_id,
-            setup.config_folder.clone(),
+            turns::TurnFolders {
+                config_folder: setup.config_folder.clone(),
+                program_folder: setup.program_folder.clone(),
+                relay_folder: relay.clone(),
+            },
             self.event_count(),
         );
         let container = if platform_grants_supported() {
@@ -809,8 +813,9 @@ impl ControlStore {
     /// OMGCode can reach: it must not overlap application storage, the
     /// development root, any workspace, any workspace container grant, or the
     /// sign-in folder, program folder, or a program or relay grant of a
-    /// Claude Code connection other than `profile`, so no model file tool,
-    /// model-run program, or other connection's process can read it. A grant
+    /// Claude Code connection other than `profile`, or a program or relay
+    /// folder that a turn record of such a connection names, so no model file
+    /// tool, model-run program, or other connection's process can read it. A grant
     /// record whose folder changed proves nothing about where its
     /// access-control entry now is, so it is refused until revoked.
     fn check_config_folder(
@@ -846,6 +851,9 @@ impl ControlStore {
                 "the Claude sign-in folder must not overlap another Claude Code connection's program folder",
             ));
         }
+        // Also the relay folder, which no setting records on Linux, and the
+        // program folder of a removed connection, while a turn reads them.
+        self.check_turn_scopes(directory, profile)?;
         for status in &self.snapshot.container_grants {
             let granted = status.grant().directory();
             if !granted.is_current()? {
@@ -973,20 +981,61 @@ impl ControlStore {
         }
         // A recorded connection's folder was checked above.
         let data_root = self.data_directory.live_path()?;
-        let reserved = turns::reserved_sign_in_folders(&data_root, |profile_id| {
+        let reserved = turns::reserved_folders(&data_root, |profile_id| {
             Some(profile_id) == except || recorded(profile_id)
         })?;
-        for (profile_id, folder) in reserved {
-            // A moved folder could now lie anywhere.
-            if !folder.is_current().unwrap_or(false)
-                || directory.contains(&folder)?
-                || folder.contains(directory)?
-            {
+        for (profile_id, folders) in reserved {
+            if overlaps_or_moved(directory, &folders.config_folder)? {
                 return Err(ControlError::ClaudeCodeSignInReserved(profile_id));
             }
         }
         Ok(false)
     }
+
+    /// Refuse a sign-in folder that overlaps a program or relay folder that
+    /// a turn record of a connection other than `except` names: that turn
+    /// can read the folder whole until its tree was observed ended, also once
+    /// its connection is removed, and on Linux no grant records either
+    /// folder. A disjoint folder is accepted.
+    ///
+    /// # Errors
+    ///
+    /// [`ControlError::ClaudeCodeScopeReserved`] for an overlapping folder or
+    /// one that moved since the turn started, and the errors of
+    /// [`turns::reserved_folders`].
+    fn check_turn_scopes(
+        &self,
+        directory: &DirectoryRecord,
+        except: Option<Uuid>,
+    ) -> Result<(), ControlError> {
+        let data_root = self.data_directory.live_path()?;
+        for (profile_id, folders) in
+            turns::reserved_folders(&data_root, |profile_id| Some(profile_id) == except)?
+        {
+            for folder in folders.readable() {
+                if overlaps_or_moved(directory, folder)? {
+                    return Err(ControlError::ClaudeCodeScopeReserved(profile_id));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether `directory` equals, contains, or lies inside a folder a turn
+/// record reserves, or that folder moved since: a moved folder could now
+/// lie anywhere.
+///
+/// # Errors
+///
+/// The I/O error that stopped a comparison.
+fn overlaps_or_moved(
+    directory: &DirectoryRecord,
+    reserved: &DirectoryRecord,
+) -> Result<bool, ControlError> {
+    Ok(!reserved.is_current().unwrap_or(false)
+        || directory.contains(reserved)?
+        || reserved.contains(directory)?)
 }
 
 /// The paths one Claude Code run uses, resolved and checked by

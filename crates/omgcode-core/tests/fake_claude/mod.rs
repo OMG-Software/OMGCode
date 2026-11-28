@@ -307,11 +307,14 @@ pub fn processes_ended(sign_in: &Path, limit: Duration) -> Result<(), String> {
 
 /// Wait up to `limit` for every fake, relay, and linger that left its alive
 /// file in `sign_in` to end, and count the files seen free. A missing file means
-/// that process never made it, so nothing of it is left to observe.
+/// that process never made it, so nothing of it is left to observe. A free
+/// file counts only once it names the process that held it: a process can
+/// make the file and end before it locks it, which proves no end.
 ///
 /// # Errors
 ///
-/// The first file that could not be opened or whose lock stayed held.
+/// The first file that could not be opened or read, whose lock stayed held,
+/// or that names no holder.
 #[allow(dead_code, reason = "only the core process tests supervise a copy")]
 pub fn alive_ended(sign_in: &Path, limit: Duration) -> Result<usize, String> {
     let until = Instant::now() + limit;
@@ -334,6 +337,16 @@ pub fn alive_ended(sign_in: &Path, limit: Duration) -> Result<usize, String> {
                 }
                 Err(error) => return Err(format!("the process of {name} still runs: {error}")),
             }
+        }
+        // Read only once locked: the holder's lock also covers reads.
+        let mut holder = String::new();
+        (&file)
+            .read_to_string(&mut holder)
+            .map_err(|error| format!("{name} cannot be read: {error}"))?;
+        if holder.parse::<u32>().is_err() {
+            return Err(format!(
+                "{name} names no process that held it ({holder:?}), so no end was seen"
+            ));
         }
         ended += 1;
     }

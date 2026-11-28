@@ -87,7 +87,15 @@ Haiku request with one tool call.
    folder either. The sign-in folder is also kept apart from every other
    connection's program folder, and each turn checks its own program and
    relay folders against every other sign-in folder, on Linux too, where no
-   grant records them. A grant or sign-in record whose folder changed proves no
+   grant records them. A running turn, and one whose end was not confirmed,
+   reads those folders until its record is cleared, also once its
+   connection is removed, so its record names them and no other
+   connection's sign-in folder that overlaps either, or with either moved
+   since, is recorded meanwhile; a separate folder still is. A sign-in folder
+   recorded after the turn resolved its connection and before its record
+   existed is found by the turn's settings check, which withdraws the turn,
+   as it does for a later state while the turn runs. A grant or sign-in
+   record whose folder changed proves no
    separation: a moved folder can keep its access-control entries and lie
    anywhere, so the check refuses until that grant is revoked or that
    connection removed. On Windows a connection with grants cannot be
@@ -136,7 +144,8 @@ Haiku request with one tool call.
    beside the runtime folder and outside every grant. Before the per-turn
    folder is made, the turn takes that lock, writes and syncs a turn record,
    `claude-code/<profile id>.<turn id>.unconfirmed`, that names the
-   connection and its sign-in folder, and only then checks every settings
+   connection, its sign-in folder, and the program and relay folders the
+   turn reads, and only then checks every settings
    state recorded since it resolved the connection. A removal that this
    check misses finds the record, which keeps the sign-in folder reserved,
    and a turn that the check withdraws removes its record and starts
@@ -163,16 +172,20 @@ Haiku request with one tool call.
    `claude-code/turn-records.lock`, beside the turn lock files and outside
    every grant, so two turns, also of two connections, cannot both take the
    last free record; a turn that waits five seconds for that lock starts
-   nothing. A turn that finds that many writes no record and starts
-   nothing, and a sign-in folder check that finds more, as records written
+   nothing. A turn that finds that many writes no record, starts nothing,
+   and fails with `claude_code_turn_records_full`, whose message names the
+   acknowledgement and the process-tree check before it; a record that
+   cannot be written for another reason fails it as `claude_code_failed`.
+   A sign-in folder check that finds more, as records written
    by other means can leave, is refused with a `control` error that names
    the acknowledgement before it reads any of them. The acknowledgement visits
    the records one at a time without that limit, so it still clears a
    connection's records while the inventory is full. While the process runs, a watcher thread checks each
    later state every 100 ms, and once more as it stops, so the turn's
    result counts only after every state up to its end was checked. A state
-   that removes the connection or, on Windows, leaves one of its roles
-   without an active grant ends the tree, and the turn fails with
+   that removes the connection, on Windows leaves one of its roles without
+   an active grant, or records another connection's sign-in folder in a
+   folder the turn reads ends the tree, and the turn fails with
    `claude_code_withdrawn`. Unreadable settings and a watcher that panicked
    withdraw the turn too; settings that another command holds are read on
    the next poll. `workspace claude-code-revoke`, `workspace
@@ -238,11 +251,14 @@ Haiku request with one tool call.
    Before an answer is written, the relay's events already queued
    are handled and the process's output is kept, in order, for the next
    round, so a cancellation sent while the runtime ran the call withholds
-   the answer. Calls are not handed to the runtime while output kept back
-   there ends the turn (a line that is not a stream event, the end of the
-   output, or input that did not fully reach the process): the round fails
-   on it first. Informational output kept there does not hold the calls
-   back.
+   the answer. Calls are not handed to the runtime while the round would
+   refuse output kept back there: a line that is not a stream event, the end
+   of the output, input that did not fully reach the process, a second init
+   report, a tool or message naming a tool the lockdown refuses, a failed
+   sign-in, a `result` while the calls would be held, or text that, with the
+   text kept back before it, passes the budget below. The round fails on it
+   first. Status output, input that reached the process, and text or
+   messages the round accepts do not hold the calls back.
    The main agent's streamed and final text share an 8 MiB budget, and more
    fails the turn as too large. A `result` counts only after the whole prompt
    was written. After the tree ends, each worker thread is joined within five
@@ -313,7 +329,8 @@ Haiku request with one tool call.
    protocol, child exit, or a withdrawal causes is reported as one of
    `claude_code_not_signed_in`, `claude_code_lockdown`,
    `claude_code_protocol`, `claude_code_failed`, or `claude_code_withdrawn`,
-   in a chat turn and in compaction alike. Cancellation and the deadlines
+   and a turn that finds the turn records full starts nothing and fails with
+   `claude_code_turn_records_full`, in a chat turn and in compaction alike. Cancellation and the deadlines
    terminate the tree, and its end is observed before the turn returns. A
    failed termination or emptiness check counts as unconfirmed cleanup, so
    the tree's own fallback kill still runs. A streaming child reports itself

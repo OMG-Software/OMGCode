@@ -859,9 +859,9 @@ impl Session {
     /// The calls to hand to the runtime, when some are ready once the
     /// relay's events already queued were handled. Those events can retire a
     /// ready call or add another; the process's output among them waits for
-    /// the next batch, in arrival order. Output kept back that ends the turn
-    /// holds the calls back, so the round fails on it before any call
-    /// reaches the runtime.
+    /// the next batch, in arrival order. Output kept back that the round
+    /// would refuse holds the calls back, so the round fails on it before
+    /// any call reaches the runtime.
     fn hand_off(
         &mut self,
         cancel: &CancelToken,
@@ -871,11 +871,52 @@ impl Session {
             return Ok(None);
         }
         self.absorb_relay_events(cancel, deadline)?;
-        if !self.calls_ready() || self.deferred.iter().any(Event::ends_the_turn) {
+        if !self.calls_ready() || self.kept_back_output_fails() {
             return Ok(None);
         }
         let count = self.unreturned.len().min(MAX_CALLS_PER_ROUND);
         Ok(Some(self.unreturned.drain(..count).collect()))
+    }
+
+    /// Whether the round would refuse output kept back once the ready calls
+    /// were handed off: output that ends the turn, or a stream event that
+    /// [`Self::stream_event`] refuses, judged in arrival order against the
+    /// budgets as they would stand then. A status frame, input that reached
+    /// the process, and text or messages the round accepts let the hand-off
+    /// go ahead, so a steady stream of them cannot hold back a ready call.
+    fn kept_back_output_fails(&self) -> bool {
+        let mut streamed = self.streamed_bytes;
+        let mut text = byte_count(&self.text);
+        self.deferred.iter().any(|event| {
+            let Event::Stdout(Ok(event)) = event else {
+                return event.ends_the_turn();
+            };
+            match event {
+                // A call is ready only once the init report was accepted, so
+                // this one is a second.
+                StreamEvent::Init(_) => true,
+                StreamEvent::ToolUseStart(name) => self.check_tool(name).is_err(),
+                StreamEvent::TextDelta(delta) => {
+                    streamed = streamed.saturating_add(byte_count(delta));
+                    streamed > MAX_STREAM_BYTES
+                }
+                StreamEvent::Assistant(message) => {
+                    message.error.as_deref() == Some("authentication_failed")
+                        || message.blocks.iter().any(|block| match block {
+                            AssistantBlock::ToolUse { name, .. } => self.check_tool(name).is_err(),
+                            AssistantBlock::Text(added) if message.parent_tool_use_id.is_none() => {
+                                text = grown_text(text, added);
+                                text > MAX_STREAM_BYTES
+                            }
+                            AssistantBlock::Text(_) | AssistantBlock::Other => false,
+                        })
+                }
+                // The calls handed off stay held until answered, and a result
+                // with a held call is refused.
+                StreamEvent::Result(_) => true,
+                StreamEvent::Ignored => false,
+            }
+        })
     }
 
     /// Handle the relay's events already waiting, at most a full queue, and
@@ -990,14 +1031,10 @@ impl Session {
 
     /// Append one text block of the main agent, within the host's budget.
     fn append_text(&mut self, text: &str) -> Result<(), ProviderError> {
-        let separator = if self.text.is_empty() { 0 } else { 2 };
-        let total = byte_count(&self.text)
-            .saturating_add(separator)
-            .saturating_add(byte_count(text));
-        if total > MAX_STREAM_BYTES {
+        if grown_text(byte_count(&self.text), text) > MAX_STREAM_BYTES {
             return Err(ProviderError::ResponseTooLarge);
         }
-        if separator > 0 {
+        if !self.text.is_empty() {
             self.text.push_str("\n\n");
         }
         self.text.push_str(text);
@@ -1472,6 +1509,15 @@ fn deadline_after(limit: Duration) -> Instant {
 /// The length of `text` in bytes, as the budgets count it.
 fn byte_count(text: &str) -> u64 {
     u64::try_from(text.len()).unwrap_or(u64::MAX)
+}
+
+/// The size of the main agent's text of `current` bytes once `added` is
+/// appended, with the blank line between them.
+fn grown_text(current: u64, added: &str) -> u64 {
+    let separator = if current == 0 { 0 } else { 2 };
+    current
+        .saturating_add(separator)
+        .saturating_add(byte_count(added))
 }
 
 /// A per-turn folder under the runtime folder, removed when dropped.

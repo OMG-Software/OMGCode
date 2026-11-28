@@ -1248,6 +1248,59 @@ fn a_removed_connections_turn_record_reserves_its_sign_in_folder() {
         .expect("nothing is reserved");
 }
 
+/// A turn record also reserves the program and relay folders its turn can
+/// read whole. Once its connection is removed, its settings name neither,
+/// and on Linux no grant ever did, so only the record refuses a new
+/// connection's sign-in folder in either, until it is acknowledged. A
+/// separate folder is accepted meanwhile.
+#[test]
+fn a_removed_connections_turn_record_reserves_its_program_and_relay_folders() {
+    let scene = Scene::new();
+    let (profile_id, grants, watch) = resolved_turn(&scene);
+    let left = watch.record_turn().expect("record");
+    let mut store = ControlStore::open(&scene.data).expect("store");
+    for (_, grant_id) in grants {
+        record_claude_code_revocation(&mut store, grant_id);
+    }
+    let _removed = store
+        .remove_provider_profile("claude", store.revision())
+        .expect("removed");
+    let in_program = scene.program.with_file_name("sign-in");
+    let in_relay = scene.relay.join("sign-in");
+    let apart = scene.root.with_file_name("apart-sign-in");
+    for folder in [&in_program, &in_relay, &apart] {
+        fs::create_dir(folder).expect("sign-in folder");
+    }
+    let program = program_in(&scene.root.with_file_name("other-tools"));
+    let declaration = |name: &str, config_folder: &Path| ClaudeCodeDeclaration {
+        name: name.to_owned(),
+        program: program.clone(),
+        config_folder: config_folder.to_owned(),
+    };
+    let events = store.entries.len();
+    for (name, folder) in [("program", &in_program), ("relay", &in_relay)] {
+        let refused = store.add_claude_code_profile(&declaration(name, folder), store.revision());
+        assert!(
+            matches!(refused, Err(ControlError::ClaudeCodeScopeReserved(id)) if id == profile_id),
+            "{name}: {refused:?}"
+        );
+    }
+    assert_eq!(store.entries.len(), events);
+    store
+        .add_claude_code_profile(&declaration("apart", &apart), store.revision())
+        .expect("a separate folder is accepted");
+    drop(store);
+    assert!(acknowledge_claude_code_cleanup(&scene.data, profile_id).expect("acknowledged"));
+    drop(left);
+
+    let mut store = ControlStore::open(&scene.data).expect("store");
+    for (name, folder) in [("program", &in_program), ("relay", &in_relay)] {
+        store
+            .add_claude_code_profile(&declaration(name, folder), store.revision())
+            .expect("the folder is free once acknowledged");
+    }
+}
+
 /// At most [`MAX_TURN_RECORDS`] turn records are kept. Once that many exist
 /// no turn records another, so none can start; beyond them, as records
 /// written by other means can leave, a sign-in folder check is refused before

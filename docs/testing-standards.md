@@ -65,17 +65,27 @@ supervisor then stops what the copy left running: the copy's scope on
 Linux, where the copy's exit ends the fake and, through its closed pipes,
 the relay but no descendant that ignores them, while on Windows each tree's
 job ends with the copy. It waits until every fake's, relay's, and linger's
-alive lock is free, on Windows revokes each connection left behind, which
-deletes its AppContainer profile (Linux has no grant or container profile
-to remove), and removes the folder. A folder whose scope could not be
-stopped, whose processes were not seen to end, or whose connection could
-not be revoked is kept and named, so nothing a retry or the operator needs
-is removed before the cleanup was confirmed.
+alive lock is free and names the process that held it, on Windows revokes
+each connection left behind, which deletes its AppContainer profile (Linux
+has no grant or container profile to remove), and removes the folder. A
+folder whose scope could not be stopped, whose processes were not seen to
+end, or whose connection could not be revoked is kept and named, so nothing
+a retry or the operator needs is removed before the cleanup was confirmed.
+A copy still running after 20 minutes, as one whose test never returns
+would be, is ended and reaped before that cleanup, and fails the run; one
+that cannot be ended leaves its folder kept and named. Each `systemctl`
+command of the scope's stop is bounded to two minutes, and one that runs
+longer fails the stop. On Windows a scene whose connection cannot be
+revoked when it is dropped keeps its folders for the supervisor's retry.
 `a_supervisor_stops_and_cleans_up_after_an_abandoned_turn` makes a copy end
 while its turn's fake, relay, and a linger run and checks that path;
-`a_supervisor_keeps_the_folder_when_the_scope_stop_fails` and
-`a_supervisor_keeps_the_folder_when_a_revocation_fails` inject each failure
-and check that the folder is kept and named. The
+`a_supervisor_keeps_the_folder_when_the_scope_stop_fails`,
+`a_supervisor_keeps_the_folder_when_a_revocation_fails`, and
+`a_supervisor_keeps_the_folder_when_an_alive_file_names_no_holder` inject
+each failure and check that the folder is kept and named;
+`a_supervisor_ends_a_copy_that_runs_past_its_deadline` checks the copy's
+deadline; and, on Windows, `a_scene_whose_revocation_fails_keeps_its_folders`
+checks the kept scene. The
 linger is a descendant of the fake that ignores its closed pipes and ends
 itself only after five minutes, so on Linux only the scope's stop ends it.
 

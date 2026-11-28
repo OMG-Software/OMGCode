@@ -48,8 +48,8 @@ pub use assignment::{
 pub use claude_code::{
     CLAUDE_CODE_TURN_STOP_WAIT, ClaudeCodeDeclaration, ClaudeCodeGrant, ClaudeCodeGrantRole,
     ClaudeCodeGrantStatus, ClaudeCodePaths, ClaudeCodeRevocation, ClaudeCodeRevokeFailure,
-    ClaudeCodeSetup, ClaudeCodeWatch, acknowledge_claude_code_cleanup, claude_code_container,
-    claude_code_runtime_folder, wait_for_claude_code_turns,
+    ClaudeCodeSetup, ClaudeCodeWatch, MAX_TURN_RECORDS, acknowledge_claude_code_cleanup,
+    claude_code_container, claude_code_runtime_folder, wait_for_claude_code_turns,
 };
 pub(crate) use claude_code::{Recheck, TurnRecord, WatchCursor};
 pub use container::{
@@ -233,10 +233,17 @@ pub enum ControlError {
         "the folder overlaps the sign-in folder of the removed Claude Code connection {0}, whose turn was not observed to end, or that folder moved since the turn started; check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
     )]
     ClaudeCodeSignInReserved(uuid::Uuid),
-    /// More turn records of Claude Code connections exist than are kept, so
-    /// no sign-in folder can be proven free of them.
+    /// A turn of the Claude Code connection with this profile identifier,
+    /// running or not observed to end, can read an overlapping folder
+    /// through its program or relay folder, or that folder moved since.
     #[error(
-        "more than {} Claude Code turn records exist, so no sign-in folder can be proven free of them and no turn can start; for each connection, check that no `claude` process of it remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge <profile id>`; keep a connection's records while that cannot be confirmed",
+        "the folder overlaps the program or relay folder of a turn of the Claude Code connection {0}, which is running or was not observed to end, or that folder moved since the turn started; wait for the turn to end, or check that no `claude` process of that connection remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge {0}`; keep the record while that cannot be confirmed"
+    )]
+    ClaudeCodeScopeReserved(uuid::Uuid),
+    /// The Claude Code turn records are full: no turn can record another,
+    /// and beyond them no sign-in folder can be proven free of them.
+    #[error(
+        "the Claude Code turn records are full ({} kept across every connection), so no turn can start, and beyond that many no sign-in folder can be proven free of them; for each connection, check that no `claude` process of it remains, including its MCP relays and their descendants, then run `workspace claude-code-acknowledge <profile id>`; keep a connection's records while that cannot be confirmed",
         claude_code::MAX_TURN_RECORDS
     )]
     ClaudeCodeTurnRecordsFull,
