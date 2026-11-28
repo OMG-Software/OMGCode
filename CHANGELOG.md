@@ -368,7 +368,8 @@ Changes are recorded here before a release version is assigned.
 - A third-party apt repository on a Linux CI runner can no longer fail a job.
   Every apt step in `rust.yml` and `testing-build.yml` now runs
   `.github/scripts/apt-install-ubuntu.sh`, which reads only the image's
-  Ubuntu source file. An Ubuntu archive error still fails the step. On
+  Ubuntu source file. Any Ubuntu archive error, a transient one included,
+  fails the step. On
   2026-11-27 `packages.microsoft.com` returned `403` and failed PR 79's zfs
   job before its tests (run 46051772270). A Secret Service failure in CI now
   leaves evidence: `.github/scripts/start-secret-service.sh` keeps the

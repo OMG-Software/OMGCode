@@ -18,27 +18,46 @@ echo "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) starting gnome-keyring-daemon" >"$log"
 # One empty line is an empty password. It creates and unlocks the login
 # collection, which becomes the default alias; empty input (no newline)
 # creates no collection. Bash reports death by signal N as status 128 + N,
-# which an ordinary exit code can also be, so the raw status is always kept;
-# bash's own job line (such as "Segmentation fault") marks a real signal.
+# which an ordinary exit code can also be, so the log names the signal only
+# as a possibility. Bash's own job line before it (such as "Segmentation
+# fault") and the core dump are what show that a signal ended the daemon.
 (
   status=0
   printf '\n' | gnome-keyring-daemon --foreground --unlock --components=secrets || status=$?
   reason="status $status"
   if [ "$status" -gt 128 ] && signal=$(kill -l "$((status - 128))" 2>/dev/null); then
-    reason="$reason (128 + SIG$signal)"
+    reason="$reason (SIG$signal if a signal ended it)"
   fi
   echo "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ) gnome-keyring-daemon exited with $reason"
 ) </dev/null >>"$log" 2>&1 &
 wrapper_pid=$!
 
+# Wait up to $1 tenths of a second for the daemon, the wrapper's child, to end.
+daemon_ended_within() {
+  for _ in $(seq 1 "$1"); do
+    pgrep -P "$wrapper_pid" >/dev/null || return 0
+    sleep 0.1
+  done
+  ! pgrep -P "$wrapper_pid" >/dev/null
+}
 on_exit() {
-  local status=$?
+  local status=$? shown
   if [ "$status" -ne 0 ]; then
-    # Stop the daemon started here, so it cannot take the name later.
-    pkill -P "$wrapper_pid" || true
-    wait "$wrapper_pid" || true
     echo "--- $log" >&2
     cat "$log" >&2
+    shown=$(wc -l <"$log")
+    # Stop the daemon started here, so it cannot take the name later: TERM,
+    # then KILL after 5 seconds. Every wait is bounded.
+    pkill -P "$wrapper_pid" || true
+    if ! daemon_ended_within 50; then
+      pkill -KILL -P "$wrapper_pid" || true
+    fi
+    if daemon_ended_within 10; then
+      wait "$wrapper_pid" || true
+      tail -n "+$((shown + 1))" "$log" >&2
+    else
+      echo "::warning::gnome-keyring-daemon under PID $wrapper_pid did not stop after SIGKILL." >&2
+    fi
   fi
 }
 trap on_exit EXIT

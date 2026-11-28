@@ -3,8 +3,8 @@
 #
 # apt reads only the image's Ubuntu source file, so a third-party repository
 # that the runner image adds (such as packages.microsoft.com) cannot fail the
-# step. An error from the Ubuntu archive itself still fails it, and package
-# signatures are checked as usual.
+# step. Any error from the Ubuntu archive itself fails it, a transient one
+# included, and package signatures are checked as usual.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -21,10 +21,12 @@ fi
 
 # apt picks the deb822 parser from the .sources extension. A source-parts
 # directory of /dev/null reads no other file, and List-Cleanup=0 keeps the
-# package lists of the sources skipped here.
+# package lists of the sources skipped here. By default apt-get update only
+# warns when an index fetch fails and keeps the image's older lists;
+# --error-on=any makes that a failure.
 apt_sources=(
   -o "Dir::Etc::SourceList=$ubuntu_sources"
   -o Dir::Etc::SourceParts=/dev/null
 )
-sudo apt-get "${apt_sources[@]}" -o APT::Get::List-Cleanup=0 update
+sudo apt-get "${apt_sources[@]}" -o APT::Get::List-Cleanup=0 --error-on=any update
 sudo apt-get "${apt_sources[@]}" install -y --no-install-recommends "$@"

@@ -113,8 +113,10 @@ Every apt step in `rust.yml` and `testing-build.yml` runs
 `/etc/apt/sources.list.d/ubuntu.sources` and no other source file. A
 third-party repository that the runner image adds, such as
 `packages.microsoft.com`, cannot fail the step; it returned `403` and failed
-a zfs job before its tests on 2026-11-27 (run 46051772270). An error from the
-Ubuntu archive still fails the step, and so does a missing source file.
+a zfs job before its tests on 2026-11-27 (run 46051772270). Any error from
+the Ubuntu archive fails the step, including a transient index fetch failure
+that `apt-get update` would otherwise only warn about (`--error-on=any`), and
+so does a missing source file.
 
 The Linux credential tests need an unlocked Secret Service.
 `.github/scripts/start-secret-service.sh` installs gnome-keyring and runs
