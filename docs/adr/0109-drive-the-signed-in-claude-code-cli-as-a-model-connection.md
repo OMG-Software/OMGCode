@@ -159,10 +159,14 @@ Haiku request with one tool call.
    lock error while a turn holds the lock. It records nothing about the
    operator's check, as `runs acknowledge` claims nothing about a run's
    processes. At most 256 turn records are kept across every connection.
-   A turn that finds that many writes no record and starts nothing, and a
-   sign-in folder check that finds more, as two connections recording at
-   once can leave, is refused with a `control` error that names the
-   acknowledgement before it reads any of them. The acknowledgement visits
+   A turn counts the records and writes its own under one exclusive lock,
+   `claude-code/turn-records.lock`, beside the turn lock files and outside
+   every grant, so two turns, also of two connections, cannot both take the
+   last free record; a turn that waits five seconds for that lock starts
+   nothing. A turn that finds that many writes no record and starts
+   nothing, and a sign-in folder check that finds more, as records written
+   by other means can leave, is refused with a `control` error that names
+   the acknowledgement before it reads any of them. The acknowledgement visits
    the records one at a time without that limit, so it still clears a
    connection's records while the inventory is full. While the process runs, a watcher thread checks each
    later state every 100 ms, and once more as it stops, so the turn's

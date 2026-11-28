@@ -57,7 +57,9 @@ Changes are recorded here before a release version is assigned.
   command records nothing about that check and is refused with a lock error
   while a turn holds the lock. A revocation that stopped on such a record
   names the acknowledgement before advising a retry. At most 256 turn
-  records are kept: a turn that finds that many starts nothing, a sign-in
+  records are kept, counted and written under one exclusive lock across
+  every connection, so concurrent turns cannot pass the limit together: a
+  turn that finds that many starts nothing, a sign-in
   folder check that finds more is refused with a `control` error that names
   the acknowledgement, and the acknowledgement still clears a connection's
   records while the inventory is full.

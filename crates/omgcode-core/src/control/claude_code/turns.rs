@@ -24,6 +24,9 @@
 //! removed. At most [`MAX_TURN_RECORDS`] records are kept: a turn starts no
 //! process once that many exist, and a reservation check refuses beyond
 //! them, while an acknowledgement still clears its connection's records.
+//! A turn counts the records and writes its own under one exclusive lock
+//! across every connection, so two turns cannot both take the last free
+//! record.
 
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
@@ -59,6 +62,14 @@ const MAX_TURN_RECORD_BYTES: u64 = 64 * 1024;
 /// The most turn records kept in application storage, across every
 /// connection. Each is a turn whose tree was not observed ended.
 pub const MAX_TURN_RECORDS: usize = 256;
+
+/// The lock under which a turn counts the turn records and writes its
+/// own, beside the turn lock files and outside every grant.
+const RECORDS_LOCK: &str = "turn-records.lock";
+
+/// How long a turn waits for another to count the records and write its
+/// own; that takes one count and one synced write.
+const RECORDS_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 /// The settings one turn of a Claude Code connection was resolved from: the
 /// application storage, the connection and its sign-in folder, and how many
@@ -157,10 +168,21 @@ impl ClaudeCodeWatch {
     ///
     /// # Errors
     ///
-    /// The I/O error that stopped writing or syncing the record, or one that
-    /// says [`MAX_TURN_RECORDS`] records already exist. No process may start
-    /// then.
+    /// The I/O error that stopped writing or syncing the record, one that
+    /// says [`MAX_TURN_RECORDS`] records already exist, and one that says
+    /// another turn held the records' lock for [`RECORDS_LOCK_WAIT`]. No
+    /// process may start then.
     pub(crate) fn record_turn(&self) -> io::Result<TurnRecord> {
+        self.record_turn_observed(|| {})
+    }
+
+    /// [`Self::record_turn`], calling `counted` once the records were
+    /// counted and before the new one is written, so a test can start
+    /// another turn there.
+    pub(super) fn record_turn_observed(&self, counted: impl FnOnce()) -> io::Result<TurnRecord> {
+        // Held until the record is written and synced, so two turns, also
+        // of two connections, cannot both count a free record.
+        let _records = lock_records(&self.data_root)?;
         let mut kept = 0;
         each_turn_record(&self.data_root, |_, _| {
             kept += 1;
@@ -175,6 +197,7 @@ impl ClaudeCodeWatch {
                 "the Claude Code turn records are full; acknowledge the ones left behind first",
             ));
         }
+        counted();
         let body = serde_json::to_vec(&TurnRecordBody {
             profile_id: self.profile_id,
             config_folder: self.config_folder.clone(),
@@ -542,6 +565,38 @@ pub(super) fn turn_lock_path(data_root: &Path, profile_id: Uuid) -> PathBuf {
 
 /// Open the connection's turn lock file, creating it when missing.
 fn open_turn_lock(data_root: &Path, profile_id: Uuid) -> io::Result<File> {
+    open_lock(&turn_lock_path(data_root, profile_id))
+}
+
+/// Take the exclusive lock under which a turn counts the turn records and
+/// writes its own, waiting at most [`RECORDS_LOCK_WAIT`] for another turn.
+///
+/// # Errors
+///
+/// The I/O error that stopped opening or locking the file, and one that
+/// says another turn held it for the whole wait.
+fn lock_records(data_root: &Path) -> io::Result<File> {
+    let file = open_lock(&data_root.join(RUNTIME_PARENT).join(RECORDS_LOCK))?;
+    let until = Instant::now()
+        .checked_add(RECORDS_LOCK_WAIT)
+        .unwrap_or_else(Instant::now);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) if Instant::now() < until => thread::sleep(POLL),
+            Err(TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "another Claude Code turn held the turn records' lock",
+                ));
+            }
+            Err(TryLockError::Error(error)) => return Err(error),
+        }
+    }
+}
+
+/// Open a lock file, creating it, private, when missing.
+fn open_lock(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
@@ -549,7 +604,7 @@ fn open_turn_lock(data_root: &Path, profile_id: Uuid) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(turn_lock_path(data_root, profile_id))
+    options.open(path)
 }
 
 /// The size and modification time of the settings journal.

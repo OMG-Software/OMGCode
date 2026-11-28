@@ -972,8 +972,11 @@ and a tool turn keeps that process for all its rounds.
   their descendants; if you cannot confirm that the tree ended, keep the
   record. The command removes the connection's records under the exclusive
   lock, is refused while a turn holds the lock, and records nothing about
-  that check. At most 256 records are kept across every connection: a turn
-  that finds that many starts nothing, a sign-in folder check that finds
+  that check. At most 256 records are kept across every connection. A turn
+  counts them and writes its own under one exclusive lock,
+  `claude-code/turn-records.lock`, so two turns cannot both take the last
+  free record, and one that waits five seconds for that lock starts
+  nothing. A turn that finds that many starts nothing, a sign-in folder check that finds
   more fails with a `control` error that names the acknowledgement, and the
   acknowledgement still clears a connection's records while the inventory
   is full. After it wrote its record and before the launch, the turn

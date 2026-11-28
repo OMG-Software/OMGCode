@@ -1249,8 +1249,8 @@ fn a_removed_connections_turn_record_reserves_its_sign_in_folder() {
 }
 
 /// At most [`MAX_TURN_RECORDS`] turn records are kept. Once that many exist
-/// no turn records another, so none can start; beyond them, as after two
-/// connections recorded at once, a sign-in folder check is refused before
+/// no turn records another, so none can start; beyond them, as records
+/// written by other means can leave, a sign-in folder check is refused before
 /// any more is read. Acknowledging a connection still clears its records
 /// while the inventory is full, and a turn records again once there is room.
 #[test]
@@ -1268,22 +1268,10 @@ fn a_full_turn_record_inventory_refuses_turns_but_not_acknowledgement() {
         assert!(refused.to_string().contains("full"), "{refused}");
     }
     let records = scene.data.join(RUNTIME_PARENT);
-    let count = || {
-        fs::read_dir(&records)
-            .expect("records")
-            .filter(|entry| {
-                entry
-                    .as_ref()
-                    .expect("entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".unconfirmed")
-            })
-            .count()
-    };
+    let count = || turn_record_count(&scene.data);
     assert_eq!(count(), MAX_TURN_RECORDS);
 
-    // One more, as a concurrent recorder of the other connection could leave.
+    // One more, written past the lock, as a copied or restored record could be.
     let prefix = format!("{}.", other.simple());
     let copied = fs::read_dir(&records)
         .expect("records")
@@ -1323,6 +1311,77 @@ fn a_full_turn_record_inventory_refuses_turns_but_not_acknowledgement() {
     assert!(acknowledge_claude_code_cleanup(&scene.data, other).expect("acknowledged"));
     assert_eq!(count(), 0);
     let _again = watch.record_turn().expect("room again");
+}
+
+/// How many turn records `data` holds.
+fn turn_record_count(data: &Path) -> usize {
+    fs::read_dir(data.join(RUNTIME_PARENT))
+        .expect("records")
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".unconfirmed")
+        })
+        .count()
+}
+
+/// Two turns cannot both take the last free record: a turn counts the
+/// records and writes its own under one exclusive lock across every
+/// connection. The first turn is held after its count, with one record
+/// free; a turn of another connection started then finds the lock held,
+/// so it neither counts nor writes until the first wrote its record, and
+/// is then refused. Without the lock both would write, one record past the
+/// limit.
+#[test]
+fn two_turns_cannot_both_take_the_last_free_record() {
+    let scene = Scene::new();
+    let (_, _, watch) = resolved_turn(&scene);
+    let other = ClaudeCodeWatch::for_tests(scene.data.clone(), Uuid::new_v4(), &scene.root);
+    for _ in 1..MAX_TURN_RECORDS {
+        let _left = other.record_turn().expect("record below the limit");
+    }
+    let (counted, at_count) = std::sync::mpsc::channel();
+    let (finished, second_finished) = std::sync::mpsc::channel::<()>();
+    let ((first, overlapped), second) = std::thread::scope(|scope| {
+        let watch = &watch;
+        let first = scope.spawn(move || {
+            let mut overlapped = false;
+            let first = watch.record_turn_observed(|| {
+                counted.send(()).expect("the test waits for the count");
+                // Held after its count: a second turn that ended now got
+                // past the count too.
+                overlapped = second_finished
+                    .recv_timeout(std::time::Duration::from_millis(500))
+                    .is_ok();
+            });
+            (first, overlapped)
+        });
+        at_count
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the first turn counted");
+        let other = &other;
+        let second = scope.spawn(move || {
+            let second = other.record_turn();
+            // The first turn stopped listening once it wrote its record.
+            let _ = finished.send(());
+            second
+        });
+        (
+            first.join().expect("the first turn"),
+            second.join().expect("the second turn"),
+        )
+    });
+    assert!(
+        !overlapped,
+        "the second turn ended while the first held its count"
+    );
+    let _first = first.expect("the first turn takes the last free record");
+    let refused = second.expect_err("no record past the limit");
+    assert!(refused.to_string().contains("full"), "{refused}");
+    assert_eq!(turn_record_count(&scene.data), MAX_TURN_RECORDS);
 }
 
 #[cfg(not(windows))]
