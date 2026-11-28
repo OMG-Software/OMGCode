@@ -681,11 +681,16 @@ Anthropic approval, and the Claude subscription requirement stays open.
   executable beside the desktop application as the relay; without one the
   turn fails with `claude_code_unusable` and starts nothing. The model box
   offers the aliases `sonnet`, `opus`, `haiku`, `fable`, `sonnet[1m]`, and
-  `opus[1m]`, and the efforts `low` to `max`. Every other route, including
-  the active selection, the desktop's `--provider-profile` launch argument,
-  and `models`, refuses the profile with `claude_code_cli_only`. A request
-  manifest records the endpoint label `claude-code:NAME`, which a desktop
-  session's record also keeps.
+  `opus[1m]`, and the efforts `low` to `max`. A desktop session's record
+  keeps the endpoint label `claude-code:NAME` and the profile's identifier,
+  so a connection removed and added again under the same name is refused as
+  stale until the session confirms it again. The desktop's
+  `--provider-profile` launch argument and `models` refuse the profile with
+  `claude_code_cli_only`. It cannot be the active selection either: core's
+  selectable check, which `workspace provider-profile-select` and the
+  `settings` window both apply, refuses a profile without a recorded
+  endpoint. A request manifest records the endpoint label
+  `claude-code:NAME`.
 - **The child.** Each run starts `claude -p` in the connection's sandbox
   with an environment built from nothing: no `ANTHROPIC_*` or `CLAUDE_*`
   variable of OMGCode's own environment reaches it, and

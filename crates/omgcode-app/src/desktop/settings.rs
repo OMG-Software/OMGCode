@@ -30,7 +30,9 @@ use omgcode_core::turn::display_safe_line;
 use super::error::DesktopError;
 use super::instructions;
 use super::preferences;
-use super::session_connections::{ChosenConnection, reasoning_efforts, session_choice};
+use super::session_connections::{
+    ChosenConnection, reasoning_efforts, recorded_choice_holds, session_choice,
+};
 use super::settings_chat::{
     chat_defaults_view, global_for_room, longest_for_room, workspace_instructions_view,
 };
@@ -405,11 +407,13 @@ impl DesktopService {
                     ConnectionOrigin::Session,
                     *endpoint != inner.endpoint,
                 ),
-                Some(ChosenConnection::Profile { name, endpoint }) => {
-                    let current = store.as_ref().and_then(|store| {
-                        session_choice(store, name)
-                            .ok()
-                            .map(|(_, endpoint)| endpoint)
+                Some(ChosenConnection::Profile {
+                    name,
+                    endpoint,
+                    profile_id,
+                }) => {
+                    let holds = store.as_ref().is_some_and(|store| {
+                        recorded_choice_holds(store, name, endpoint, *profile_id)
                     });
                     let kind = store
                         .as_ref()
@@ -424,7 +428,7 @@ impl DesktopService {
                             selectable: true,
                         },
                         ConnectionOrigin::Session,
-                        current.as_deref() != Some(endpoint.as_str()),
+                        !holds,
                     )
                 }
             }

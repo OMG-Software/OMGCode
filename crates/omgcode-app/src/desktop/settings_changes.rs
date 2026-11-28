@@ -53,12 +53,14 @@ use omgcode_core::policy::{Access, PermissionSet, WorkspaceId, WriteTool};
 use omgcode_core::provider::ModelEndpoint;
 use omgcode_core::run::{self, REVOCATION_WAIT};
 use omgcode_core::turn::display_safe_line;
+use uuid::Uuid;
 
 use super::DesktopService;
 use super::error::DesktopError;
 use super::instructions;
 use super::session_connections::{
-    ChosenConnection, SessionRecord, check_model, recorded_endpoint, session_choice,
+    ChosenConnection, SessionRecord, bound_profile_id, check_model, recorded_choice_holds,
+    recorded_endpoint, session_choice,
 };
 use super::settings::overview_of;
 use super::state::folder_of_directory;
@@ -481,8 +483,13 @@ fn selection_confirmation(
 enum Choice {
     /// The launch default endpoint with `OMGCODE_LM_TOKEN`.
     Default,
-    /// A recorded profile and the endpoint shown in the confirmation.
-    Profile { name: String, endpoint: String },
+    /// A recorded profile, the endpoint shown in the confirmation, and for a
+    /// Claude Code connection the profile the confirmation named (ADR-0111).
+    Profile {
+        name: String,
+        endpoint: String,
+        profile_id: Option<Uuid>,
+    },
 }
 
 impl Choice {
@@ -491,9 +498,14 @@ impl Choice {
             Self::Default => ChosenConnection::Default {
                 endpoint: default_endpoint.to_owned(),
             },
-            Self::Profile { name, endpoint } => ChosenConnection::Profile {
+            Self::Profile {
+                name,
+                endpoint,
+                profile_id,
+            } => ChosenConnection::Profile {
                 name: name.clone(),
                 endpoint: endpoint.clone(),
+                profile_id: *profile_id,
             },
         }
     }
@@ -535,6 +547,7 @@ fn requested_choice(
         Choice::Profile {
             name: status.profile().name().to_owned(),
             endpoint,
+            profile_id: bound_profile_id(status),
         },
         confirmation,
     ))
@@ -551,13 +564,15 @@ fn current_choice(
         Some(ChosenConnection::Default { endpoint }) => {
             (endpoint == default_endpoint).then_some(Choice::Default)
         }
-        Some(ChosenConnection::Profile { name, endpoint }) => {
-            let (_, current) = session_choice(store?, name).ok()?;
-            (current == *endpoint).then(|| Choice::Profile {
-                name: name.clone(),
-                endpoint: endpoint.clone(),
-            })
-        }
+        Some(ChosenConnection::Profile {
+            name,
+            endpoint,
+            profile_id,
+        }) => recorded_choice_holds(store?, name, endpoint, *profile_id).then(|| Choice::Profile {
+            name: name.clone(),
+            endpoint: endpoint.clone(),
+            profile_id: *profile_id,
+        }),
         None | Some(ChosenConnection::Follow {}) => {
             let name = store?
                 .active_provider_profile()
@@ -566,7 +581,12 @@ fn current_choice(
                 None => Some(Choice::Default),
                 Some(name) => {
                     let endpoint = recorded_endpoint(store?, &name)?;
-                    Some(Choice::Profile { name, endpoint })
+                    // The active connection is never a Claude Code one.
+                    Some(Choice::Profile {
+                        name,
+                        endpoint,
+                        profile_id: None,
+                    })
                 }
             }
         }

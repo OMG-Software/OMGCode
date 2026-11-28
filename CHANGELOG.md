@@ -20,22 +20,28 @@ Changes are recorded here before a release version is assigned.
   the `claude` program and the sign-in folder and says that each turn's
   messages, instructions, selected skills, and tool results go to that
   program and through it to Anthropic. The session record keeps the label
-  `claude-code:<profile>`, the one the CLI writes into request manifests.
-  Every turn opens the settings store again: a removed profile, another
-  kind, or another label refuses the turn with `session_connection_stale`,
-  and core's `resolve_claude_code` checks the program, the sign-in folder,
-  and on Windows every grant before any process starts, failing with
-  `claude_code_unusable`. The desktop passes the `omgcode` executable in the
+  `claude-code:<profile>`, the one the CLI writes into request manifests,
+  and the profile's identifier in a new optional `profile_id` field that
+  only a Claude Code choice writes; a build before 0.74.0 finds a file with
+  one unreadable and treats it as empty. Every turn opens the settings store
+  again: a removed profile, another kind, another label, or another profile
+  added under the same name refuses the turn with
+  `session_connection_stale`, and status and reselection apply the same
+  rule, so such a replacement needs the session's confirmation again. Core's
+  `resolve_claude_code` checks the program, the sign-in folder, and on
+  Windows every grant before any process starts, failing with
+  `claude_code_unusable`, and the profile it resolved must carry the
+  identifier the session confirmed. The desktop passes the `omgcode` executable in the
   folder of its own canonical executable as the MCP relay, when that file
   exists; without one a turn starts nothing. The model box offers the
   aliases `sonnet`, `opus`, `haiku`, `fable`, `sonnet[1m]`, and `opus[1m]`
   without asking a server, and the **Effort** box `low`, `medium`, `high`,
   `xhigh`, and `max` (core's new `CLAUDE_CODE_EFFORTS`). Shutdown waits at
   least core's 30-second `CLAUDE_CODE_TURN_STOP_WAIT` while a Claude Code
-  turn runs. The global selection, the desktop's `--provider-profile`
-  launch argument, and `omgcode models` still refuse the kind with
-  `claude_code_cli_only`, whose message now also names a desktop session's
-  own choice. The `settings` window offers Claude Code last in its add
+  turn runs. The desktop's `--provider-profile` launch argument and
+  `omgcode models` still refuse the kind with `claude_code_cli_only`, whose
+  message now also names a desktop session's own choice, and core's
+  selectable check still keeps it from being the global selection. The `settings` window offers Claude Code last in its add
   dropdown, hides the endpoint and key fields for it, and says to sign in
   first from a terminal with `CLAUDE_CONFIG_DIR` set. The new
   `settings_add_claude_code` takes the revision and a name; Rust opens a
@@ -57,11 +63,13 @@ Changes are recorded here before a release version is assigned.
   through both dialogs and one confirmation; cancelled dialogs, a declined
   confirmation, and core's refusals, which record nothing; a session's
   choice, dialog, label, aliases, and efforts; a declined choice; the global
-  refusal; a removed connection going stale; a revocation with nothing
+  refusal; a removed connection going stale; a connection added again under
+  the same name going stale until it is chosen again; a revocation with nothing
   granted; a turn refused without a relay; on Windows, the grant's refusal
   without a relay, its four-folder confirmation, and a turn refused for a
   missing grant; elsewhere, the grant's platform refusal), the revocation
-  error text, core's effort list, the policy and layer tests, and the
+  error text, the session record's `profile_id` shape, core's effort list,
+  the policy and layer tests, and the
   windows against a fake transport and the mock backend. No desktop turn of
   the real or the fake `claude` ran, no test granted folders from the
   desktop, and the Linux desktop turn, which needs a delegated cgroup v2, is

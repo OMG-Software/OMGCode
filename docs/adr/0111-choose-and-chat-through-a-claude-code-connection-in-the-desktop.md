@@ -44,16 +44,25 @@ the desktop must handle:
    and `omgcode models` still refuse the kind. A global default would send
    every session that has no choice of its own through a program the operator
    did not confirm for that session.
-2. **The recorded label.** The session record keeps the profile name and the
-   label `claude-code:<profile>`, the one the CLI writes into each request
-   manifest. The record grants nothing. Every turn opens the settings store
-   again. The turn is refused with `session_connection_stale` when the
-   profile is gone, is no longer a `claude_code` connection, or has another
-   label. It then resolves the connection through core's
+2. **The recorded label and profile.** The session record keeps the
+   profile name, the label `claude-code:<profile>`, the one the CLI writes
+   into each request manifest, and the profile's identifier. The label holds
+   only the name, and core gives each added profile a new identifier and
+   lets no profile's program or folder change, so the identifier names the
+   program and sign-in folder the confirmation named. The record grants
+   nothing. Every turn opens the settings store again. The turn is refused
+   with `session_connection_stale` when the profile is gone, is no longer a
+   `claude_code` connection, has another label, or has another identifier.
+   A connection removed and added again under the same name is therefore
+   stale for every session that chose the first one, and choosing it again
+   is a change that the session confirms. Status and reselection apply the
+   same rule. It then resolves the connection through core's
    `resolve_claude_code` with the relay of decision 3, which checks the
    recorded program, the sign-in folder, its overlap rules, and on Windows
    every grant. A refusal there fails the turn with `claude_code_unusable`
-   and core's reason, before any process starts.
+   and core's reason, before any process starts. The paths core resolves
+   for the turn must carry the identifier the session confirmed, because
+   they are read in a later hold of the settings store than the label.
 3. **The relay is the `omgcode` beside the desktop.** The desktop shell
    passes the `omgcode` executable (`omgcode.exe` on Windows) in the folder of
    its own canonical executable, when that file exists. Every release
@@ -105,6 +114,10 @@ the desktop must handle:
   desktop is a GUI-subsystem program on Windows, and its standard streams
   inside the AppContainer were not verified. The CLI relay is the tested
   path.
+- **Clear a session's Claude Code choice when the connection is removed.**
+  Rejected: `omgcode workspace provider-profile-remove` does not touch the
+  desktop's session-choice file, and a removal while the desktop is closed
+  would be missed. The recorded identifier covers every route.
 - **Allow the connection as the global default.** Rejected for decision 1's
   reason. It can be reconsidered once a turn of the real `claude` has been
   observed in the desktop.
@@ -128,6 +141,10 @@ the desktop must handle:
   application before acknowledging.
 - When the settings store stays busy for two seconds at a turn's start or
   end, the turn can be withdrawn, as on the CLI.
+- The session-choice file keeps version 1. Only a Claude Code choice writes
+  the optional `profile_id`, so other records keep their earlier shape; a
+  build before 0.74.0 finds a file with one unreadable and treats it as
+  empty, so its sessions follow the default connection there.
 - No signed-in turn of the real `claude` has run in the desktop or on the
   CLI. The desktop tests drive the choice, the confirmation, and the
   refusals before a process starts.

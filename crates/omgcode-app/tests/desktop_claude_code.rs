@@ -145,13 +145,18 @@ fn profile_count(fixture: &Fixture) -> usize {
 
 /// Record the connection `claude` the way the trusted CLI does.
 fn record(fixture: &Fixture, outside: &Outside) {
+    record_program(fixture, &outside.program, &outside.sign_in);
+}
+
+/// Record the connection `claude` with `program` and `sign_in`.
+fn record_program(fixture: &Fixture, program: &Path, sign_in: &Path) {
     let mut control = ControlStore::open(&fixture.data).expect("control store");
     control
         .add_claude_code_profile(
             &ClaudeCodeDeclaration {
                 name: "claude".to_owned(),
-                program: outside.program.clone(),
-                config_folder: outside.sign_in.clone(),
+                program: program.to_path_buf(),
+                config_folder: sign_in.to_path_buf(),
             },
             control.revision(),
         )
@@ -440,6 +445,62 @@ fn a_session_chooses_a_claude_code_connection_and_gets_its_aliases_and_efforts()
         "{}",
         refused.message()
     );
+}
+
+/// A connection removed and added again under the same name is another
+/// profile, with its own program: a session that confirmed the first one is
+/// stale until it confirms the replacement, and choosing it again is allowed.
+#[test]
+fn a_connection_added_again_under_the_same_name_needs_the_sessions_confirmation() {
+    let fixture = Fixture::new();
+    let workspace = fixture.workspace("project", text_only());
+    let outside = Outside::new();
+    record(&fixture, &outside);
+    let default = NoCallServer::start();
+    let service = open(&fixture, &default.endpoint, None);
+    let first = session(&service, workspace.id);
+    choose(&service, first, Some("claude"), &Scripted::answers(&[true])).expect("chosen");
+
+    service
+        .settings_remove_connection(
+            wire(json!({ "revision": revision(&fixture), "name": "claude" })),
+            &Scripted::answers(&[]),
+        )
+        .expect("removed");
+    let other = outside.root.join("other");
+    fs::create_dir_all(&other).expect("another program folder");
+    let replacement = other.join(if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    });
+    fs::write(&replacement, b"").expect("another program");
+    record_program(&fixture, &replacement, &outside.sign_in);
+
+    // The label is the same, but the session confirmed another profile.
+    let after = status(&service, first);
+    assert_eq!(after.connection.endpoint, LABEL);
+    assert!(after.stale);
+    assert_eq!(
+        send(&service, first, LABEL).code(),
+        "session_connection_stale"
+    );
+    assert_eq!(
+        service
+            .chat_models(wire(json!({ "session_id": first })))
+            .expect_err("stale")
+            .code(),
+        "session_connection_stale"
+    );
+
+    // Choosing it again is a change, confirmed with the replacement's program.
+    let prompt = Scripted::answers(&[true]);
+    let chosen = choose(&service, first, Some("claude"), &prompt).expect("chosen again");
+    let shown = prompt.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].message.contains("other"), "{}", shown[0].message);
+    assert!(!chosen.stale);
+    assert_eq!(chosen.connection.endpoint, LABEL);
 }
 
 /// Declining the choice records nothing for the session.

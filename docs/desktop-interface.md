@@ -1713,14 +1713,18 @@ asks "Send this session's chat turns through the Claude Code connection
 `<name>`?", names the `claude` program and the sign-in folder, and says that
 each turn's messages, instructions, selected skills, and tool results go to
 that program and through it to Anthropic. The record keeps the label
-`claude-code:<profile>`. Every turn reads the settings store again: a profile
-that is gone, is no longer a Claude Code connection, or has another label
-refuses the turn with `session_connection_stale`. Core's `resolve_claude_code`
+`claude-code:<profile>` and the profile's identifier as an optional
+`profile_id`, which no other choice writes. Every turn reads the settings
+store again: a profile that is gone, is no longer a Claude Code connection,
+has another label, or is another profile added under the same name refuses
+the turn with `session_connection_stale`. The status shows such a choice as
+stale, and choosing the connection again is a change that is confirmed. Core's `resolve_claude_code`
 then checks the recorded program, the sign-in folder and its overlap rules,
 and on Windows every grant, with the `omgcode` executable beside the desktop
 executable as the relay. A missing relay or any refusal there fails the turn
 with the code `credential` and a message that starts `claude_code_unusable`,
-before any process starts. The turn then runs the clients the CLI builds for
+before any process starts, and a resolved profile with another identifier
+than the session's is refused as stale. The turn then runs the clients the CLI builds for
 the connection, and an approval waits in the turn as for any provider.
 `session_model_select` records a model for a session with no dialog; it
 applies the rule `chat_send` applies (at most 256 bytes, no control
@@ -2555,8 +2559,11 @@ ACLs the private store refuses, see the notes in
   cancelled dialogs, a declined confirmation, and core's refusals before the
   confirmation, which record nothing; a session's choice, its dialog, label,
   aliases, and efforts; a declined choice; the global selection's refusal; a
-  removed connection making the choice stale; a revocation with nothing
-  granted; and a turn refused without a relay. On Windows it covers the
+  removed connection making the choice stale; a connection added again
+  under the same name making it stale until it is chosen and confirmed
+  again; a revocation with nothing granted; and a turn refused without a
+  relay. A unit test in `session_connections.rs` checks that only a Claude
+  Code choice writes `profile_id`. On Windows it covers the
   grant's refusal without a relay, its confirmation naming four folders, and
   a turn refused for a missing grant; elsewhere, the grant's platform
   refusal. No test grants the folders or starts a `claude` process.

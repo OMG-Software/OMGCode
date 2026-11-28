@@ -952,8 +952,9 @@ and a tool turn keeps that process for all its rounds.
   runtime folder is created with mode `0700`.
 - **Limits.** The process tree has 4 GiB of memory, 512 processes, four
   hours of CPU time, a one-hour deadline, 64 KiB of captured standard error,
-  and no disk-growth limit. On Linux the CLI must run in a delegated cgroup
-  v2, as for `run`. Cancellation, a lockdown failure, and every other
+  and no disk-growth limit. On Linux the CLI, or the desktop application for
+  a desktop session's turn (ADR-0111), must run in a delegated cgroup v2, as
+  for `run`. Cancellation, a lockdown failure, and every other
   failure end the whole tree, and the end is observed before the turn
   returns. A failed termination or emptiness check counts as unconfirmed
   cleanup, so the tree's own fallback kill still runs.

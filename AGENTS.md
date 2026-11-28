@@ -169,8 +169,9 @@ not evidence of Anthropic approval, and was tested with a fake `claude` only
 The `settings` window adds one through a native file dialog for the
 program, a native folder dialog for the sign-in folder, and a native
 confirmation that names both, and on Windows grants and revokes its
-folders. A session records the label `claude-code:<profile>`, which every
-turn re-checks; a desktop turn uses the `omgcode` executable beside the
+folders. A session records the label `claude-code:<profile>` and the
+profile's identifier, which every turn re-checks, so a connection added again
+under the same name needs the session's confirmation again; a desktop turn uses the `omgcode` executable beside the
 desktop application as its relay and starts nothing without one. The model
 box offers `sonnet`, `opus`, `haiku`, `fable`, `sonnet[1m]`, and `opus[1m]`,
 and the **Effort** box `low` to `max`. Shutdown waits up to 30 seconds while

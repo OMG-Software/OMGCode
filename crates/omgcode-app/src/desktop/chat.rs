@@ -300,7 +300,7 @@ impl DesktopService {
         // now, so a missing grant or relay refuses the turn before any
         // process starts (ADR-0111). It has no token.
         let clients = match &claude_code {
-            Some(name) => ChatClients::claude_code(&settings, inner.claude_code_paths(name)?),
+            Some(choice) => ChatClients::claude_code(&settings, inner.claude_code_paths(choice)?),
             None => ChatClients::for_connection(&settings, &connection),
         }
         .map_err(|error| DesktopError::from_app(&error))?;
