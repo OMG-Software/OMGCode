@@ -659,10 +659,11 @@ Anthropic approval, and the Claude subscription requirement stays open.
 - **Verified.** A fake `claude` drives the whole path in the tests: on
   Windows inside the connection's real AppContainer with real grants,
   through the CLI commands, a tool turn, a streamed resumed turn, and
-  compaction. Claude Code 2.1.325's flags, init report, MCP handshake, and
-  sign-in failure were observed directly ([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
-- **Not verified.** No signed-in turn of the real `claude` ran inside the
-  AppContainer, nothing ran on Linux, and rate-limit and long-turn shapes
+  compaction. The same tests passed on Linux under WSL 2 (Ubuntu 24.04) in
+  a delegated cgroup. Claude Code 2.1.325's flags, init report, MCP
+  handshake, and sign-in failure were observed directly on Windows ([ADR-0109](adr/0109-drive-the-signed-in-claude-code-cli-as-a-model-connection.md)).
+- **Not verified.** No signed-in turn of the real `claude` ran on either
+  platform, Linux ran only under WSL 2, and rate-limit and long-turn shapes
   were not observed.
 
 ## Stored credential use (0.30.0)

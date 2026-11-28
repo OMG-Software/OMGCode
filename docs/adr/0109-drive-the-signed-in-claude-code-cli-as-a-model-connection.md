@@ -237,6 +237,11 @@ Haiku request with one tool call.
   but claude would then keep state or a second transcript that OMGCode does
   not journal. An application restart would also lose it.
 - **Use `--bare`.** It never reads OAuth, so it cannot use the subscription.
+- **Keep the Linux socket under application storage and have the relay
+  connect through `/proc/self/fd/<folder>/mcp.sock`.** The path would then
+  fit `sun_path`, but the relay would depend on procfs inside the sandbox
+  and on a descriptor trick that is harder to review. A short private folder
+  needs neither.
 
 ## Consequences
 
@@ -260,9 +265,12 @@ Haiku request with one tool call.
 - A fake `claude` drives the whole path in the tests, on Windows inside the
   connection's real AppContainer with real grants: the confined launch, the
   pipe and nonce, the MCP server, the turn runtime, the CLI commands, and
-  compaction. Not yet verified: a signed-in turn of the real `claude`
-  inside the AppContainer, Linux, the desktop shell and in-turn approvals (a
-  later change), other plans, rate-limit shapes, and long turns.
+  compaction. The same tests passed on Linux under WSL 2 (Ubuntu 24.04) in
+  a delegated cgroup; the first Linux run found the socket path too long
+  for `sun_path`, which decision 6 now avoids. Not yet verified: a
+  signed-in turn of the real `claude` on either platform, Linux outside
+  WSL 2, the desktop shell and in-turn approvals (a later change), other
+  plans, rate-limit shapes, and long turns.
 
 ## References
 

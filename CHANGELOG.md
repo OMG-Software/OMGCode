@@ -43,9 +43,10 @@ Changes are recorded here before a release version is assigned.
   binaries use a fake `claude`, on Windows inside the real AppContainer with
   real grants, through the core runtime and the CLI commands. It is a minor
   version because the public `ProviderError` and `ProviderKind` enums gain
-  variants. No signed-in turn of the real `claude` ran inside the
-  AppContainer, nothing ran on Linux, and it is personal use, not evidence of
-  Anthropic approval: the Claude subscription requirement stays open.
+  variants. Both binaries also passed on Linux under WSL 2 in a delegated
+  cgroup. No signed-in turn of the real `claude` ran on either platform,
+  and it is personal use, not evidence of Anthropic approval: the Claude
+  subscription requirement stays open.
 - Version 0.68.0 adds **Generate toolchain profiles from local packages** to
   the **Toolchain profiles** group of the desktop `settings` window. The
   local packages are the toolchains installed on this computer, and it
