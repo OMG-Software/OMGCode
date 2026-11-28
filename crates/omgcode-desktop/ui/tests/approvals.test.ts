@@ -590,22 +590,45 @@ describe("approvals window", () => {
         }
       });
 
-      it("reviews again with a fresh token after the system dialog is declined", async () => {
-        approvals = [view({ operation: "network" })];
-        current = fetchDetail("no", {}, offered);
-        await start();
-        ipc.on("approval_decide", () => rejection("cancelled", "No change was made."));
-        await select();
-        await settle(1000);
-        buttonByText(root, ALLOW_HOST_LABEL).click();
-        await settle();
+      // Rust spends the token before the dialog and before core's checks, so every failed
+      // Allow host loads a fresh review instead of keeping the spent token.
+      it.each([
+        ["cancelled", "No change was made.", ALLOW_HOST_CANCELLED_TEXT],
+        [
+          "web_host_duplicate",
+          "That host is already listed.",
+          "That host is already listed. (web_host_duplicate)",
+        ],
+        ["web_host_too_many", "The list is full.", "The list is full. (web_host_too_many)"],
+        [
+          "web_host_fetch_not_allow",
+          "Web fetch is not allow.",
+          "Web fetch is not allow. (web_host_fetch_not_allow)",
+        ],
+        [
+          "allow_host_unavailable",
+          "No host was offered.",
+          "No host was offered. (allow_host_unavailable)",
+        ],
+      ])(
+        "reviews again with a fresh token after Allow host fails with %s",
+        async (code, message, notice) => {
+          approvals = [view({ operation: "network" })];
+          current = fetchDetail("no", {}, offered);
+          await start();
+          ipc.on("approval_decide", () => rejection(code, message));
+          await select();
+          await settle(1000);
+          buttonByText(root, ALLOW_HOST_LABEL).click();
+          await settle();
 
-        expect(ipc.callsTo("approval_detail")).toHaveLength(3);
-        expect(root.querySelector(".result")?.textContent).toBe(ALLOW_HOST_CANCELLED_TEXT);
-        expect(buttonByText(root, "Approve").disabled).toBe(true);
-        await settle(1000);
-        expect(buttonByText(root, "Approve").disabled).toBe(false);
-      });
+          expect(ipc.callsTo("approval_detail")).toHaveLength(3);
+          expect(root.querySelector(".result")?.textContent).toBe(notice);
+          expect(buttonByText(root, "Approve").disabled).toBe(true);
+          await settle(1000);
+          expect(buttonByText(root, "Approve").disabled).toBe(false);
+        },
+      );
 
       it.each([
         [{ state: "not_allow" } as AllowHostView, ALLOW_HOST_NOT_ALLOW_TEXT],
