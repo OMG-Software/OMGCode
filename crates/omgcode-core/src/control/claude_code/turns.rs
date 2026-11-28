@@ -82,7 +82,9 @@ const RECORDS_LOCK_WAIT: Duration = Duration::from_secs(5);
 pub struct ClaudeCodeWatch {
     data_root: PathBuf,
     profile_id: Uuid,
-    folders: TurnFolders,
+    /// Boxed, so the model client that carries the watch stays near the
+    /// size of the other clients.
+    folders: Box<TurnFolders>,
     events: usize,
 }
 
@@ -157,7 +159,7 @@ struct TurnRecordBody {
 }
 
 impl ClaudeCodeWatch {
-    pub(super) const fn new(
+    pub(super) fn new(
         data_root: PathBuf,
         profile_id: Uuid,
         folders: TurnFolders,
@@ -166,7 +168,7 @@ impl ClaudeCodeWatch {
         Self {
             data_root,
             profile_id,
-            folders,
+            folders: Box::new(folders),
             events,
         }
     }

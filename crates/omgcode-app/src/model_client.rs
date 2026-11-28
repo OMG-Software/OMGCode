@@ -20,9 +20,8 @@ use omgcode_core::turn::{CancelToken, ModelError, ToolModel, ToolModelReply, Too
 pub enum ModelClient {
     /// An OpenAI-compatible endpoint, local or hosted, or a ChatGPT plan.
     Http(LocalModelClient),
-    /// A recorded `claude_code` connection, boxed: its recorded folders
-    /// make it much larger than the HTTP client.
-    ClaudeCode(Box<ClaudeCodeClient>),
+    /// A recorded `claude_code` connection.
+    ClaudeCode(ClaudeCodeClient),
 }
 
 impl From<LocalModelClient> for ModelClient {
@@ -33,7 +32,7 @@ impl From<LocalModelClient> for ModelClient {
 
 impl From<ClaudeCodeClient> for ModelClient {
     fn from(client: ClaudeCodeClient) -> Self {
-        Self::ClaudeCode(Box::new(client))
+        Self::ClaudeCode(client)
     }
 }
 
